@@ -34,7 +34,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  */
 async function accountExists(address: string): Promise<boolean> {
   try {
-    const horizon = new Horizon.Server(HORIZON_URL, { allowHttp: true });
+    const horizon = new Horizon.Server(HORIZON_URL);
     await withTimeout(horizon.loadAccount(address), ACCOUNT_CHECK_TIMEOUT_MS, address);
     return true;
   } catch (err) {
@@ -55,7 +55,7 @@ async function checkSenderBalance(
   requiredAmount: bigint
 ): Promise<{ ok: boolean; reason?: string }> {
   try {
-    const horizon = new Horizon.Server(HORIZON_URL, { allowHttp: true });
+    const horizon = new Horizon.Server(HORIZON_URL);
     const account = await horizon.loadAccount(senderAddress);
 
     if (tokenAddress === 'native') {

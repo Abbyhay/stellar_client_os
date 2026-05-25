@@ -28,6 +28,7 @@ import {
   FeeEstimationError,
   DeploymentTimeoutError,
 } from './errors';
+import { shouldAllowLocalHttp } from '../utils/httpSecurity.js';
 
 const DEFAULT_BASE_FEE = '100';
 const DEFAULT_TIMEOUT = 60;
@@ -70,10 +71,24 @@ export class ContractDeployer {
   private passphrasePromise: Promise<string> | undefined;
 
   constructor(config: DeployerConfig) {
-    this.rpc = new Server(config.rpcUrl, { allowHttp: true });
+    this.rpc = new Server(config.rpcUrl, {
+      allowHttp: this.getAllowHttp(config.rpcUrl, config.allowHttp),
+    });
     this.networkPassphrase = config.networkPassphrase;
     this.baseFee = config.baseFee ?? DEFAULT_BASE_FEE;
     this.timeoutSeconds = config.timeoutSeconds ?? DEFAULT_TIMEOUT;
+  }
+
+  private getAllowHttp(rpcUrl: string, allowHttp?: boolean): boolean {
+    try {
+      return shouldAllowLocalHttp(rpcUrl, allowHttp);
+    } catch (error) {
+      throw new DeployerError(
+        (error as Error).message,
+        'UNSAFE_HTTP_RPC_URL',
+        error as Error
+      );
+    }
   }
 
   // ─── Async factory ─────────────────────────────────────────────────────────

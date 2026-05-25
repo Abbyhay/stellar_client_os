@@ -14,12 +14,29 @@ interface DeployConfig {
   networkPassphrase: string;
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function allowLocalHttp(url: string): boolean {
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export class ContractDeployer {
   private rpcServer: RpcServer;
   private networkPassphrase: string;
 
   constructor(config: DeployConfig) {
-    this.rpcServer = new RpcServer(config.rpcUrl, { allowHttp: true });
+    this.rpcServer = new RpcServer(config.rpcUrl, {
+      allowHttp: allowLocalHttp(config.rpcUrl),
+    });
     this.networkPassphrase = config.networkPassphrase;
   }
 
