@@ -116,7 +116,26 @@ export function useDistributionTransaction() {
         return false;
       }
 
-      const recipients = state.recipients.map((r) => r.address);
+      // Filter out zero-amount entries before submission (Issue #437)
+      const activeRecipients = state.recipients.filter((r) => {
+        if (!r.address || r.address.trim() === '') return false;
+        if (state.type === 'weighted') {
+          if (!r.amount || r.amount.trim() === '') return false;
+          try {
+            return amountToStroops(r.amount) > 0n;
+          } catch {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      if (activeRecipients.length === 0) {
+        notify.error('No non-zero amount recipients to process');
+        return false;
+      }
+
+      const recipients = activeRecipients.map((r) => r.address);
 
       // Pre-flight: check all recipient accounts exist
       notify.loading('Validating recipients...');
@@ -136,20 +155,6 @@ export function useDistributionTransaction() {
         return false;
       }
 
-      const recipients = state.recipients.map(r => r.address);
-
-      for (const address of recipients) {
-        try {
-          const exists = await stellarService.accountExists(address);
-          if (!exists) {
-            throw new Error(`Account ${address} does not exist or is not funded`);
-          }
-        } catch (e: any) {
-          if (e.message && e.message.includes('not exist')) throw e;
-          throw new Error('Network rate limited while verifying accounts. Please wait a moment and try again.');
-        }
-      }
-
       let transactionHash: string;
       // Calculate total amount in stroops (7 decimal places)
       let totalStroops: bigint;
@@ -158,7 +163,7 @@ export function useDistributionTransaction() {
       if (state.type === 'equal') {
         totalStroops = amountToStroops(state.totalAmount);
       } else {
-        amountsStroops = state.recipients.map((r) => amountToStroops(r.amount!));
+        amountsStroops = activeRecipients.map((r) => amountToStroops(r.amount!));
         totalStroops = amountsStroops.reduce((sum, a) => sum + a, 0n);
       }
 
