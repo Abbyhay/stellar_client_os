@@ -113,6 +113,7 @@ export interface ProviderRate {
 
 export interface AggregatedRatesResponse {
     success: boolean;
+    status?: number;
     data?: {
         best: ProviderRate | null;
         all: ProviderRate[];

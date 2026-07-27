@@ -94,6 +94,7 @@ const realOfframpService = {
             if (!res.ok) {
                 return {
                     success: false,
+                    status: res.status,
                     error: data.message || data.error || "Failed to get rates",
                 };
             }
