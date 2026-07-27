@@ -6,7 +6,7 @@ import {
   TokenBalanceData,
 } from "@/types/token-balance.types";
 import { useWallet } from "@/providers/StellarWalletProvider";
-import { TokenBalance } from "./TokenBalance";
+import { TokenBalanceCard } from "./TokenBalanceCard";
 import { extractBalances } from "@/services/transform-balances";
 import { sortTokenBalances } from "@/utils/sort-token-balances";
 import { StellarService } from "@/services/stellar.service";
@@ -291,12 +291,13 @@ export function TokenBalanceList({ className = "" }: TokenBalanceListProps) {
 
       <div className="space-y-3">
         {balances?.map((balance) => (
-          <TokenBalance
+          <TokenBalanceCard
             key={`${balance.assetCode}-${balance.assetIssuer || "native"}`}
             assetCode={balance.assetCode}
             assetIssuer={balance.assetIssuer}
             balance={balance.balance}
             iconUrl={balance.iconUrl}
+            onRetry={handleManualRefresh}
           />
         ))}
       </div>

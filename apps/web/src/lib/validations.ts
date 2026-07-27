@@ -18,6 +18,8 @@ export interface StreamRecord {
   delegateAddress?: string | null
 }
 
+export const TOKEN_AMOUNT_REGEX = /^\d+(\.\d{1,7})?$/
+
 export const paymentStreamSchema = z.object({
   recipientAddress: z
     .string()
@@ -34,7 +36,8 @@ export const paymentStreamSchema = z.object({
     .refine((val) => {
       const num = parseFloat(val)
       return !isNaN(num) && num > 0
-    }, "Amount must be a positive number"),
+    }, "Amount must be a positive number")
+    .refine((val) => TOKEN_AMOUNT_REGEX.test(val), "Amount cannot exceed 7 decimal places"),
   
   duration: z
     .string()
@@ -65,7 +68,8 @@ export const withdrawStreamSchema = z.object({
     .refine((val) => {
       const num = parseFloat(val)
       return !isNaN(num) && num > 0
-    }, "Amount must be a positive number"),
+    }, "Amount must be a positive number")
+    .refine((val) => TOKEN_AMOUNT_REGEX.test(val), "Amount cannot exceed 7 decimal places"),
   
   withdrawTo: z
     .string()
@@ -85,7 +89,8 @@ export const depositStreamSchema = z.object({
     .refine((val) => {
       const num = parseFloat(val)
       return !isNaN(num) && num > 0
-    }, "Amount must be a positive number"),
+    }, "Amount must be a positive number")
+    .refine((val) => TOKEN_AMOUNT_REGEX.test(val), "Amount cannot exceed 7 decimal places"),
 })
 
 export type DepositStreamFormData = z.infer<typeof depositStreamSchema>
