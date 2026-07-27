@@ -11,7 +11,7 @@ import {
     SortingState,
 } from "@tanstack/react-table";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 
 import {
@@ -23,7 +23,7 @@ import {
     TableHeader,
 } from "@/components/ui/table";
 
-import { streamColumns } from "./streamColumns";
+import { streamColumns, useStreamColumns } from "./streamColumns";
 import { StreamRecord } from "@/lib/validations";
 import { validPageLimits } from "@/lib/constants";
 import AppSelect from "@/components/molecules/AppSelect";
@@ -51,7 +51,8 @@ function StreamsTable({
     const pageCount = Math.ceil(totalCount / limit);
     const [sorting, setSorting] = useState<SortingState>([]);
 
-    const columnsUsed = columns ?? streamColumns;
+    const defaultColumns = useStreamColumns();
+    const columnsUsed = useMemo(() => columns ?? defaultColumns, [columns, defaultColumns]);
 
     const table = useReactTable({
         data,

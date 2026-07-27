@@ -63,9 +63,9 @@ async function checkSenderBalance(
       const xlmBalance = account.balances.find(
         (b): b is Horizon.HorizonApi.BalanceLine<'native'> => b.asset_type === 'native'
       );
-      const available = BigInt(Math.floor(parseFloat(xlmBalance?.balance ?? '0') * 1e7));
+      const available = xlmBalance?.balance ? amountToStroops(xlmBalance.balance) : 0n;
       // Keep 1 XLM reserve
-      const reserve = BigInt(1e7);
+      const reserve = 10_000_000n;
       if (available - reserve < requiredAmount) {
         return { ok: false, reason: 'Insufficient XLM balance' };
       }
@@ -83,7 +83,7 @@ async function checkSenderBalance(
       return { ok: false, reason: 'Token trustline not found. Add the token to your wallet first.' };
     }
 
-    const available = BigInt(Math.floor(parseFloat(tokenBalance.balance) * 1e7));
+    const available = amountToStroops(tokenBalance.balance);
     if (available < requiredAmount) {
       return { ok: false, reason: 'Insufficient token balance' };
     }
