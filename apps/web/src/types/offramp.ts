@@ -177,6 +177,21 @@ export interface QuoteStatusResponse {
     error?: string;
 }
 
+// ==================== USER LIMITS TYPES ====================
+
+export interface UserOfframpLimits {
+    dailyLimit: number;
+    dailyUsed: number;
+    remainingDaily: number;
+    tier: string;
+}
+
+export interface UserLimitsResponse {
+    success: boolean;
+    data?: UserOfframpLimits;
+    error?: string;
+}
+
 // ==================== FORM & UI STATE TYPES ====================
 
 export interface OfframpFormState {

@@ -6,6 +6,7 @@ import type {
   OfframpCountry,
   ProviderRate,
   QuoteStatusResponse,
+  UserLimitsResponse,
   VerifyBankAccountResponse,
 } from "@/types/offramp";
 import type { BridgeQuote } from "@/services/allbridge.service";
@@ -321,6 +322,25 @@ export const mockOfframpService = {
   }> {
     await sleep(getMockDelay("updateTx"), signal);
     return { success: true, data: { updated: true } };
+  },
+
+  async getUserLimits(
+    _walletId?: string,
+    signal?: AbortSignal,
+  ): Promise<UserLimitsResponse> {
+    await sleep(getMockDelay("sync"), signal);
+    // Mock daily limit of $1000 USDC with $0 used by default
+    const mockDailyLimit = 1000;
+    const mockDailyUsed = 0;
+    return {
+      success: true,
+      data: {
+        dailyLimit: mockDailyLimit,
+        dailyUsed: mockDailyUsed,
+        remainingDaily: mockDailyLimit - mockDailyUsed,
+        tier: "standard",
+      },
+    };
   },
 
   async getQuoteStatus(
