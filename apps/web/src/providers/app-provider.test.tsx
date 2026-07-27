@@ -73,6 +73,7 @@ describe("AppProvider offline notification", () => {
   })
 
   it("removes connectivity listeners when unmounted", () => {
+    const addEventListener = vi.spyOn(window, "addEventListener")
     const removeEventListener = vi.spyOn(window, "removeEventListener")
     const { unmount } = render(
       <AppProvider>
@@ -80,9 +81,19 @@ describe("AppProvider offline notification", () => {
       </AppProvider>,
     )
 
+    const onlineListener = addEventListener.mock.calls.find(
+      ([event]) => event === "online",
+    )?.[1]
+    const offlineListener = addEventListener.mock.calls.find(
+      ([event]) => event === "offline",
+    )?.[1]
+
+    expect(onlineListener).toBeDefined()
+    expect(offlineListener).toBeDefined()
+
     unmount()
 
-    expect(removeEventListener).toHaveBeenCalledWith("online", expect.any(Function))
-    expect(removeEventListener).toHaveBeenCalledWith("offline", expect.any(Function))
+    expect(removeEventListener).toHaveBeenCalledWith("online", onlineListener)
+    expect(removeEventListener).toHaveBeenCalledWith("offline", offlineListener)
   })
 })
