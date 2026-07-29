@@ -9,17 +9,47 @@ import StreamCountdown from "./StreamCountdown";
 const getStatusColor = (status: string) => {
     switch (status?.toLowerCase()) {
         case "active":
-            return "bg-green-500";
+            return "bg-emerald-500";
         case "canceled":
             return "bg-red-500";
         case "transferred":
             return "bg-blue-500";
         case "paused":
-            return "bg-orange-500";
+            return "bg-amber-500";
         case "completed":
-            return "bg-gray-500";
         default:
-            return "bg-gray-500";
+            return "bg-zinc-500";
+    }
+};
+
+const getStatusBadgeStyle = (status: string) => {
+    switch (status?.toLowerCase()) {
+        case "active":
+            return {
+                dot: "bg-emerald-500",
+                badge: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+            };
+        case "paused":
+            return {
+                dot: "bg-amber-500",
+                badge: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+            };
+        case "canceled":
+            return {
+                dot: "bg-red-500",
+                badge: "bg-red-500/10 text-red-400 border-red-500/20",
+            };
+        case "transferred":
+            return {
+                dot: "bg-blue-500",
+                badge: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+            };
+        case "completed":
+        default:
+            return {
+                dot: "bg-zinc-500",
+                badge: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
+            };
     }
 };
 
@@ -137,12 +167,14 @@ export const streamColumns: ColumnDef<StreamRecord>[] = [
                     ? "completed"
                     : (row.getValue("status") as string);
 
+            const badgeStyle = getStatusBadgeStyle(status);
+
             return (
                 <div className="flex justify-center items-center">
-                    <span
-                        className={`size-2 rounded-full ${getStatusColor(status)} mr-2`}
-                    />
-                    <div className="text-white capitalize">{status}</div>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${badgeStyle.badge}`}>
+                        <span className={`size-1.5 rounded-full ${badgeStyle.dot} mr-1.5`} />
+                        <span className="capitalize">{status}</span>
+                    </span>
                 </div>
             );
         },
