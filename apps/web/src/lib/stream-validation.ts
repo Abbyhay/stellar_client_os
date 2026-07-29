@@ -68,6 +68,7 @@ export function validateEndTime(
   }
   
   // Calculate end time
+  const start = startTime || Math.floor(Date.now() / 1000);
   const endTime = calculateEndTime(startTime, duration, durationUnit);
   const now = Math.floor(Date.now() / 1000);
   
@@ -76,10 +77,10 @@ export function validateEndTime(
     return "Stream end time must be in the future";
   }
   
-  // Warn if duration is very short (less than 1 minute)
+  // Enforce minimum 5-minute duration (300 seconds)
   const durationSeconds = durationToSeconds(duration, durationUnit);
-  if (durationSeconds < 60) {
-    return "Duration is too short (minimum 1 minute recommended)";
+  if (durationSeconds < 300 || endTime < start + 300) {
+    return "Stream duration must be at least 5 minutes";
   }
   
   return null;
