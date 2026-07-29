@@ -1,6 +1,6 @@
 "use client";
-import { motion, AnimatePresence } from "framer-motion";
-import { Wallet, Check, X } from "lucide-react";
+import { motion } from "framer-motion";
+import { Wallet, Check } from "lucide-react";
 import React from "react";
 import { useWallet, WalletId } from "@/providers/StellarWalletProvider";
 import {
@@ -37,11 +37,32 @@ export function WalletModal() {
     }
   };
 
+  // Radix restores focus to whichever element opened the dialog. After a
+  // successful connect that trigger unmounts (ConnectButton swaps to its
+  // connected state), so the default restore targets a detached node and focus
+  // falls back to <body> — the keyboard user is dropped outside the app's tab
+  // order. Redirect to whichever wallet trigger is currently mounted instead.
+  const handleCloseAutoFocus = React.useCallback((event: Event) => {
+    const walletTrigger = document.querySelector<HTMLElement>(
+      "[data-wallet-trigger]",
+    );
+    if (walletTrigger) {
+      event.preventDefault();
+      walletTrigger.focus();
+    }
+  }, []);
+
   return (
     <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
-      <DialogContent className="max-w-md p-1 overflow-hidden border-white/10 bg-[#0F1621] rounded-3xl shadow-2xl">
+      <DialogContent
+        onCloseAutoFocus={handleCloseAutoFocus}
+        className="max-w-md p-1 overflow-hidden border-white/10 bg-[#0F1621] rounded-3xl shadow-2xl"
+      >
         {/* Glossy overlay effect */}
-        <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-linear-to-br from-white/5 to-transparent pointer-events-none"
+        />
 
         <div className="relative bg-[#0F1621] rounded-[22px] p-8 flex flex-col">
           {/* Header */}
@@ -63,6 +84,8 @@ export function WalletModal() {
               return (
                 <button
                   key={wallet.id}
+                  type="button"
+                  aria-pressed={isSelected}
                   onClick={() => setActiveSelection(wallet.id)}
                   className={`group relative flex items-center gap-4 w-full p-4 rounded-2xl transition-all border ${isSelected
                     ? "bg-white/10 border-white/30 shadow-[0_0_20px_rgba(255,255,255,0.05)]"
@@ -111,6 +134,7 @@ export function WalletModal() {
 
           {/* Action Button */}
           <button
+            type="button"
             onClick={handleConnectClick}
             disabled={!activeSelection || isConnecting}
             className={`group relative w-full py-4 rounded-2xl font-bold text-sm tracking-widest uppercase transition-all flex items-center justify-center gap-3 overflow-hidden shadow-lg ${activeSelection
