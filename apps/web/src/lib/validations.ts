@@ -12,7 +12,12 @@ export interface StreamRecord {
   withdrawnAmount: string
   startTime: number
   endTime: number
-  status: "Active" | "Paused" | "Canceled" | "Completed"
+  /**
+   * The on-chain lifecycle status of this stream.
+   * "Confirming" is a transient client-side state used while the creation
+   * transaction is still pending confirmation on the Stellar network.
+   */
+  status: "Active" | "Paused" | "Canceled" | "Completed" | "Confirming"
   cancelable: boolean
   transferable: boolean
   delegateAddress?: string | null
