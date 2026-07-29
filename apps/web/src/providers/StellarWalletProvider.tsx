@@ -166,6 +166,7 @@ export const StellarWalletProvider = ({
   const supportedWallets: { id: WalletId; name: string; icon: string }[] = [
     { id: "freighter", name: "Freighter", icon: "/icons/freighter.png" },
     { id: "albedo", name: "Albedo", icon: "/icons/albedo.png" },
+    { id: "rango", name: "Rango", icon: "/icons/rango.png" },
     { id: "xbull", name: "xBull", icon: "/icons/xbull.png" },
     { id: "rabet", name: "Rabet", icon: "/icons/rabet.png" },
     { id: "lobstr", name: "Lobstr", icon: "/icons/lobstr.png" },
@@ -177,6 +178,7 @@ export const StellarWalletProvider = ({
     rabet: "https://rabet.io/",
     albedo: "https://albedo.link/",
     lobstr: "https://lobstr.co/",
+    rango: "https://app.rango.exchange/",
   };
 
   const connect = useCallback(async (walletId: WalletId) => {
