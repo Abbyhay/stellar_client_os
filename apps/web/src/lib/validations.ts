@@ -22,7 +22,7 @@ export const paymentStreamSchema = z.object({
   recipientAddress: z
     .string()
     .min(1, "Recipient address is required")
-    .refine((address) => StellarService.validateStellarAddress(address), "Invalid Stellar address format"),
+    .refine((address) => StellarService.validateStellarAddress(address), "Please enter a valid Stellar public key"),
   
   token: z
     .string()
