@@ -142,7 +142,7 @@ export function useDistributionState() {
       });
     }
 
-    // For equal distribution, validate total amount
+    // For equal distribution, validate total amount and guard against division by zero
     if (currentState.type === 'equal') {
       if (!currentState.totalAmount || currentState.totalAmount.trim() === '') {
         errors.push({
@@ -156,6 +156,15 @@ export function useDistributionState() {
             field: 'totalAmount',
             message: totalAmountError,
           });
+        } else if (currentState.recipients.length > 0) {
+          // Perform division calculation safely with recipients.length > 0 guard
+          const perRecipientAmount = calculateEqualAmount(currentState.totalAmount, currentState.recipients.length);
+          if (perRecipientAmount === '0' && Number(currentState.totalAmount) > 0) {
+            errors.push({
+              field: 'totalAmount',
+              message: 'Total amount is too small to distribute among recipients',
+            });
+          }
         }
       }
     }
