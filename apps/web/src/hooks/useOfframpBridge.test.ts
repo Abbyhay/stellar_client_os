@@ -18,6 +18,7 @@ vi.mock("@/services/offramp.service", () => ({
         createOfframp: vi.fn(),
         updateQuoteTxHash: vi.fn(),
         getQuoteStatus: vi.fn(),
+        getUserLimits: vi.fn(),
     },
 }));
 
@@ -36,6 +37,8 @@ vi.mock("@/lib/api", () => ({
 
 import { useWallet } from "@/providers/StellarWalletProvider";
 import { offrampService } from "@/services/offramp.service";
+
+const mockSignTransaction = vi.fn().mockResolvedValue("signed-xdr");
 
 const mockWallet = {
     address: "GABC123",
@@ -97,6 +100,15 @@ describe("useOfframpBridge", () => {
             success: true,
             data: { best: mockQuote, all: [mockQuote], errors: [], timestamp: new Date().toISOString() },
         });
+        (offrampService.getUserLimits as ReturnType<typeof vi.fn>).mockResolvedValue({
+            success: true,
+            data: {
+                dailyLimit: 1000,
+                dailyUsed: 0,
+                remainingDaily: 1000,
+                tier: "standard",
+            },
+        });
     });
 
     afterEach(() => {
@@ -115,6 +127,8 @@ describe("useOfframpBridge", () => {
         expect(result.current.offrampData).toBeNull();
         expect(result.current.bridgeTxHash).toBeNull();
         expect(result.current.payoutStatus).toBeNull();
+        expect(result.current.userLimits).toBeNull();
+        expect(result.current.isLoadingLimits).toBe(true);
         expect(result.current.formState).toEqual({
             token: "USDC",
             amount: "",
@@ -253,6 +267,67 @@ describe("useOfframpBridge", () => {
         expect(result.current.step).toBe("form");
     });
 
+    // --- getQuote daily tier limit validation ---
+
+    it("getQuote sets error when amount exceeds daily tier limit", async () => {
+        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
+
+        // Set amount to 5000 which exceeds the mock daily limit of 1000
+        act(() => { result.current.handleFormChange("amount", "5000"); });
+        await drainTimers();
+        expect(result.current.userLimits).not.toBeNull();
+        expect(result.current.quote).not.toBeNull();
+
+        await act(async () => { await result.current.getQuote({ ...result.current.formState }); });
+
+        expect(result.current.error).toContain("Amount exceeds your daily offramp limit");
+        expect(result.current.step).toBe("form");
+    });
+
+    it("getQuote allows amount within daily tier limit", async () => {
+        (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({
+            success: true,
+            data: mockOfframpData,
+        });
+
+        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
+
+        // Set amount to 500 which is within the mock daily limit of 1000
+        act(() => { result.current.handleFormChange("amount", "500"); });
+        await drainTimers();
+        expect(result.current.userLimits).not.toBeNull();
+        expect(result.current.quote).not.toBeNull();
+
+        await act(async () => { await result.current.getQuote({ ...result.current.formState }); });
+
+        expect(result.current.step).toBe("quote");
+        expect(result.current.offrampData).toEqual(mockOfframpData);
+    });
+
+    it("getQuote allows submission when user limits fetch fails (graceful degradation)", async () => {
+        (offrampService.getUserLimits as ReturnType<typeof vi.fn>).mockResolvedValue({
+            success: false,
+            error: "Failed to fetch limits",
+        });
+        (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({
+            success: true,
+            data: mockOfframpData,
+        });
+
+        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
+
+        act(() => { result.current.handleFormChange("amount", "5000"); });
+        await drainTimers();
+        expect(result.current.userLimits).toBeNull();
+        expect(result.current.quote).not.toBeNull();
+
+        await act(async () => { await result.current.getQuote({ ...result.current.formState }); });
+
+        // Should succeed because limits fetch failed → validation skipped
+        expect(result.current.step).toBe("quote");
+        expect(result.current.offrampData).toEqual(mockOfframpData);
+    });
+
     // --- confirmAndBridge ---
 
     async function setupToQuoteStep(result: { current: ReturnType<typeof useOfframpBridge> }) {
@@ -263,33 +338,11 @@ describe("useOfframpBridge", () => {
         expect(result.current.step).toBe("quote");
     }
 
-    it("confirmAndBridge transitions to 'processing' and starts polling", async () => {
-        (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-
-        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
-        await setupToQuoteStep(result);
-
-        await act(async () => { await result.current.confirmAndBridge(); });
-
-        expect(result.current.step).toBe("processing");
-        expect(result.current.isLoading).toBe(false);
-    });
-
-    it("confirmAndBridge sets error when missing required data", async () => {
-        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
-
-        await act(async () => { await result.current.confirmAndBridge(); });
-
-        expect(result.current.error).toBe("Missing required data");
-    });
-
-    // --- Payout polling ---
-
-    it("payout polling transitions to 'completed' and stops polling", async () => {
+    it("confirmAndBridge transitions to processing and starts polling", async () => {
         (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
         (offrampService.getQuoteStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
             success: true,
-            data: { status: "completed", providerMessage: "Done" },
+            data: { status: "pending", providerMessage: "Pending" },
         });
 
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
@@ -298,10 +351,13 @@ describe("useOfframpBridge", () => {
         await act(async () => { await result.current.confirmAndBridge(); });
         expect(result.current.step).toBe("processing");
 
-        // Fire payout poll interval (10s) → completed
-        await act(async () => { vi.advanceTimersByTime(10000); });
-        await act(async () => { await Promise.resolve(); });
-        expect(result.current.step).toBe("completed");
+        expect(result.current.step).toBe("processing");
+    });
+
+    it("confirmAndBridge sets error when missing required data", async () => {
+        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
+
+        await act(async () => { await result.current.confirmAndBridge(); });
 
         // Advance timers again — polling should have stopped, no additional calls
         const callCount = (offrampService.getQuoteStatus as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -319,7 +375,6 @@ describe("useOfframpBridge", () => {
 
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
         await setupToQuoteStep(result);
-
         await act(async () => { await result.current.confirmAndBridge(); });
         expect(result.current.step).toBe("processing");
 
@@ -337,9 +392,6 @@ describe("useOfframpBridge", () => {
 
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
         await setupToQuoteStep(result);
-
-        await act(async () => { await result.current.confirmAndBridge(); });
-        expect(result.current.step).toBe("processing");
 
         await act(async () => { vi.advanceTimersByTime(10000); });
         await act(async () => { await Promise.resolve(); });

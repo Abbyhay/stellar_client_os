@@ -151,6 +151,8 @@ export async function withdraw(params: {
     await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
 }
 
+import { createBatches } from '../../../../packages/sdk/src/utils/batchDistribution';
+
 export async function distribute(params: {
     sender: string;
     token: string;
@@ -159,15 +161,19 @@ export async function distribute(params: {
     signTransaction?: WalletSigner;
 }): Promise<void> {
     const client = createDistributorClient(params.sender);
+    const BATCH_SIZE = 100;
 
     if (typeof params.amounts === 'bigint') {
-        const tx = await client.distributeEqual({
-            sender: params.sender,
-            token: params.token,
-            total_amount: params.amounts,
-            recipients: params.recipients,
-        });
-        await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+        const recipientBatches = createBatches(params.recipients, BATCH_SIZE);
+        for (const batch of recipientBatches) {
+            const tx = await client.distributeEqual({
+                sender: params.sender,
+                token: params.token,
+                total_amount: params.amounts,
+                recipients: batch,
+            });
+            await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+        }
         return;
     }
 
@@ -175,13 +181,18 @@ export async function distribute(params: {
         throw new Error('Recipients and amounts length mismatch');
     }
 
-    const tx = await client.distributeWeighted({
-        sender: params.sender,
-        token: params.token,
-        recipients: params.recipients,
-        amounts: params.amounts,
-    });
-    await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+    const recipientBatches = createBatches(params.recipients, BATCH_SIZE);
+    const amountBatches = createBatches(params.amounts, BATCH_SIZE);
+
+    for (let i = 0; i < recipientBatches.length; i++) {
+        const tx = await client.distributeWeighted({
+            sender: params.sender,
+            token: params.token,
+            recipients: recipientBatches[i],
+            amounts: amountBatches[i],
+        });
+        await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+    }
 }
 
 export async function fetchAccountInfo(address: string, signal?: AbortSignal): Promise<AccountInfo | null> {
