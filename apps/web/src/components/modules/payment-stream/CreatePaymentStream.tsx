@@ -11,6 +11,7 @@ import { PaymentStreamConfirmationModal } from "./PaymentStreamConfirmationModal
 import { capitalizeWord } from "@/lib/utils";
 import { SUPPORTED_TOKENS, PaymentStreamFormData } from "@/lib/validations";
 import { StellarService } from "@/lib/stellar";
+import { createStream } from "@/lib/api";
 import { validateEndTime } from "@/lib/stream-validation";
 import { useDebouncedCallback } from "@/hooks/use-debounce-callback";
 import { useBalanceValidation } from "@/hooks/use-balance-validation";
@@ -45,7 +46,7 @@ const createInitialStreamData = (
 });
 
 const CreatePaymentStream = () => {
-  const { address, isConnected } = useWallet();
+  const { address, isConnected, signTransaction } = useWallet();
   const queryClient = useQueryClient();
 
   const tokenOptions = SUPPORTED_TOKENS.map((token) => ({
@@ -196,10 +197,31 @@ const CreatePaymentStream = () => {
         transferable: streamData.transferability,
       };
 
-      const streamId = await StellarService.createPaymentStream(formData);
+      const tokenAddress = SUPPORTED_TOKENS.find(t => t.value === streamData.token)?.address;
+      if (!tokenAddress) {
+        throw new Error('Invalid token selected');
+      }
+
+      const amount = BigInt(Math.floor(parseFloat(streamData.amount) * 10000000));
+      const durationMultiplier = streamData.duration === 'hour' ? 3600 :
+        streamData.duration === 'day' ? 86400 :
+          streamData.duration === 'week' ? 604800 :
+            streamData.duration === 'month' ? 2592000 : 31536000;
+      const durationInSeconds = Math.floor(parseFloat(streamData.durationValue) * durationMultiplier);
+      const startTime = Math.floor(Date.now() / 1000);
+
+      const streamId = await createStream({
+        sender: address!,
+        recipient: streamData.recipient,
+        token: tokenAddress,
+        amount,
+        startTime,
+        endTime: startTime + durationInSeconds,
+        signTransaction,
+      });
 
       toast.success(
-        `Stream created successfully! ID: ${streamId.slice(0, 10)}...`
+        `Stream created successfully! ID: ${streamId}`
       );
 
       // Reset form

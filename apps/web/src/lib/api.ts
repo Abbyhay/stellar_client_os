@@ -227,6 +227,17 @@ export async function resumeStream(params: { id: string; signTransaction: (xdr: 
     await signAndSendTx(tx, params.signTransaction);
 }
 
+export async function depositToStream(params: {
+    streamId: number;
+    amount: bigint;
+    sender: string;
+    signTransaction?: WalletSigner;
+}): Promise<void> {
+    const client = createPaymentStreamClient(params.sender);
+    const tx = await client.deposit(BigInt(params.streamId), params.amount);
+    await signAndSendTx(tx, params.signTransaction);
+}
+
 export async function cancelStream(params: { id: string; signTransaction: (xdr: string) => Promise<string> }) {
     const client = new PaymentStreamClient({
         networkPassphrase: NETWORK_PASSPHRASE,

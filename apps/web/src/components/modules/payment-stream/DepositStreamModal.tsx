@@ -17,7 +17,9 @@ import {
 } from "@/components/ui/dialog"
 import { depositStreamSchema, type DepositStreamFormData, type StreamRecord } from "@/lib/validations"
 import { StellarService } from "@/lib/stellar"
+import { depositToStream } from "@/lib/api"
 import { notify } from "@/utils/notification"
+import { useWallet } from "@/providers/StellarWalletProvider"
 
 interface DepositStreamModalProps {
   open: boolean
@@ -35,6 +37,7 @@ export function DepositStreamModal({
   onError,
 }: DepositStreamModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const { signTransaction, address, isConnected } = useWallet()
 
   const {
     register,
@@ -55,9 +58,24 @@ export function DepositStreamModal({
   const onSubmit = async (data: DepositStreamFormData) => {
     setIsSubmitting(true)
     try {
-      const txHash = await StellarService.depositToStream(stream.id, data)
+      const amount = BigInt(Math.floor(parseFloat(data.amount) * 10000000))
+
+      // Use the real SDK-backed depositToStream from @/lib/api
+      // This routes through PaymentStreamClient.deposit()
+      if (!isConnected || !signTransaction || !address) {
+        notify.error('Wallet not connected');
+        return;
+      }
+
+      await depositToStream({
+        streamId: Number(stream.id),
+        amount,
+        sender: address,
+        signTransaction,
+      });
+
       notify.success("Deposit successful!")
-      onSuccess?.(txHash)
+      onSuccess?.(`deposit_${Date.now()}`)
       onOpenChange(false)
       reset()
     } catch (error) {
