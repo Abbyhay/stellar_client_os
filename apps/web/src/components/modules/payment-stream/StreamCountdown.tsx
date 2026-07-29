@@ -12,10 +12,7 @@ const StreamCountdown: React.FC<StreamCountdownProps> = ({ endTime, status }) =>
     const normalizedStatus = status.toLowerCase();
 
     useEffect(() => {
-        if (normalizedStatus !== "active") {
-            setCurrentTime(Date.now());
-            return;
-        }
+        if (normalizedStatus !== "active") return;
 
         const interval = setInterval(() => {
             setCurrentTime(Date.now());
