@@ -58,7 +58,7 @@ export const StellarWalletProvider = ({
 }) => {
   const [address, setAddress] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
-    const savedAddress = safeGetItem("stellar_wallet_address");
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
     const savedNetwork = safeGetItem("stellar_wallet_network");
     console.log('Lazy init address:', { savedAddress, savedNetwork });
     if (savedNetwork === WalletNetwork.TESTNET && savedAddress && isValidStellarAddress(savedAddress)) {
@@ -68,7 +68,7 @@ export const StellarWalletProvider = ({
   });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(() => {
     if (typeof window === 'undefined') return "idle";
-    const savedAddress = safeGetItem("stellar_wallet_address");
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
     const savedWalletId = safeGetItem("stellar_wallet_id");
     const savedNetwork = safeGetItem("stellar_wallet_network");
     console.log('Lazy init connectionStatus:', { savedAddress, savedWalletId, savedNetwork });
@@ -79,7 +79,7 @@ export const StellarWalletProvider = ({
   });
   const [selectedWalletId, setSelectedWalletId] = useState<WalletId | null>(() => {
     if (typeof window === 'undefined') return null;
-    const savedAddress = safeGetItem("stellar_wallet_address");
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
     const savedWalletId = safeGetItem("stellar_wallet_id");
     const savedNetwork = safeGetItem("stellar_wallet_network");
     console.log('Lazy init selectedWalletId:', { savedWalletId, savedNetwork });
@@ -108,7 +108,7 @@ export const StellarWalletProvider = ({
     setKit(walletKit);
 
     // RESTORE SESSION
-    const savedAddress = safeGetItem("stellar_wallet_address");
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
     const savedWalletId = safeGetItem("stellar_wallet_id");
     const savedNetwork = safeGetItem("stellar_wallet_network");
 
