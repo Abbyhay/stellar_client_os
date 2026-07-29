@@ -159,6 +159,12 @@ export interface BatchDistributionResult {
   amountBatches?: bigint[][];
 }
 
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer (got ${value})`);
+  }
+}
+
 /**
  * Splits recipients into batches and creates assembled transactions for equal distribution.
  * 
