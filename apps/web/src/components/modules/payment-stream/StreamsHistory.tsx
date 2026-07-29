@@ -227,7 +227,7 @@ export const StreamsHistory = () => {
                     />
                 </div>
 
-                <TabsContent value="incoming">
+                <TabsContent value="incoming" className="w-full overflow-x-auto">
                     <StreamsTable
                         data={streamsData?.streams ?? []}
                         page={streamsData?.meta.currentPage}
@@ -238,7 +238,7 @@ export const StreamsHistory = () => {
                     />
                 </TabsContent>
 
-                <TabsContent value="outgoing">
+                <TabsContent value="outgoing" className="w-full overflow-x-auto">
                     <StreamsTable
                         data={streamsData?.streams ?? []}
                         page={streamsData?.meta.currentPage}
