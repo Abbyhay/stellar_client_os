@@ -1854,6 +1854,18 @@ impl MockSwapProvider {
         let rate_bps: i128 = env.storage().instance().get(&soroban_sdk::Symbol::new(&env, "rate_bps")).unwrap_or(10000);
         let amount_out = (amount_in * rate_bps) / 10000;
 
+        // In "underdeliver" mode the mock still transfers a shortfall amount
+        // instead of panicking, so tests can exercise the payment-stream
+        // contract's own balance-delta slippage check in deposit_with_swap
+        // rather than only ever hitting this mock's guard.
+        let underdeliver: bool = env.storage().instance().get(&soroban_sdk::Symbol::new(&env, "underdeliver")).unwrap_or(false);
+        if underdeliver {
+            let shortfall = amount_out - 1;
+            let to_token_client = token::Client::new(&env, &to_token);
+            to_token_client.transfer(&env.current_contract_address(), &to, &shortfall);
+            return shortfall;
+        }
+
         if amount_out < min_amount_out {
             panic!("slippage exceeded");
         }
@@ -1866,6 +1878,10 @@ impl MockSwapProvider {
 
     pub fn set_rate_bps(env: Env, rate_bps: i128) {
         env.storage().instance().set(&soroban_sdk::Symbol::new(&env, "rate_bps"), &rate_bps);
+    }
+
+    pub fn set_underdeliver(env: Env, underdeliver: bool) {
+        env.storage().instance().set(&soroban_sdk::Symbol::new(&env, "underdeliver"), &underdeliver);
     }
 }
 
@@ -2065,6 +2081,48 @@ fn test_deposit_with_swap_slippage_exceeded() {
 
     // Request more out than the fixed 1:1 rate can provide
     let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &600);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deposit_with_swap_slippage_exceeded_by_contract_check() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    let swap_provider_client = MockSwapProviderClient::new(&env, &swap_provider_id);
+    client.set_swap_provider(&swap_provider_id);
+
+    // Underdeliver mode makes the mock transfer one unit less than what it
+    // computes, without panicking on its own guard, so this test exercises
+    // deposit_with_swap's independent balance-delta slippage check instead.
+    swap_provider_client.set_underdeliver(&true);
+
+    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
+    dest_admin.mint(&swap_provider_id, &10_000);
+
+    let source_admin = token::StellarAssetClient::new(&env, &source_token);
+    source_admin.mint(&sender, &1_000);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &1000,
+        &0,
+        &0,
+        &100,
+    );
+
+    // The mock will deliver 499 (500 - 1) which is below min_amount_out,
+    // but won't panic itself, so the contract's own post-swap check must catch it.
+    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &500);
     assert!(result.is_err());
 }
 

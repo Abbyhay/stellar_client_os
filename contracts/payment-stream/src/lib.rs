@@ -156,6 +156,7 @@ pub enum Error {
     SwapProviderNotSet = 17,
     InvalidSwapPath = 18,
     SlippageExceeded = 19,
+    ReentrantStateChange = 20,
 }
 
 // Constants
@@ -346,7 +347,7 @@ impl PaymentStreamContract {
         amount_in: i128,
         min_amount_out: i128,
     ) -> i128 {
-        let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
+        let stream: Stream = Self::get_stream(env.clone(), stream_id);
 
         if matches!(stream.status, StreamStatus::Canceled | StreamStatus::Completed) {
             panic_with_error!(&env, Error::StreamNotActive);
@@ -366,6 +367,9 @@ impl PaymentStreamContract {
             Some(provider) => provider,
             None => panic_with_error!(&env, Error::SwapProviderNotSet),
         };
+
+        let pre_swap_status = stream.status;
+        let pre_swap_balance = stream.balance;
 
         // Escrow the source asset from the sender directly to the swap
         // provider, which will perform the conversion.
@@ -391,6 +395,15 @@ impl PaymentStreamContract {
 
         if amount_out < min_amount_out {
             panic_with_error!(&env, Error::SlippageExceeded);
+        }
+
+        // Re-read the stream after the external swap-provider call: if the
+        // provider reentered this contract (e.g. via withdraw, cancel_stream,
+        // or another deposit on the same stream_id), the state we captured
+        // before the call is stale. Reject rather than blindly overwrite it.
+        let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
+        if stream.status != pre_swap_status || stream.balance != pre_swap_balance {
+            panic_with_error!(&env, Error::ReentrantStateChange);
         }
 
         let new_balance = stream.balance.checked_add(amount_out)
