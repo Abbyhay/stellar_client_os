@@ -12,6 +12,7 @@ import type {
     QuoteStatusData,
     OfframpCountry,
     ProviderRate,
+    UserOfframpLimits,
 } from "@/types/offramp";
 import { SUPPORTED_OFFRAMP_TOKENS, getAccountNumberRules } from "@/types/offramp";
 
@@ -76,6 +77,10 @@ interface UseOfframpBridgeReturn {
     bridgeTxHash: string | null;
     payoutStatus: QuoteStatusData | null;
 
+    // User Limits
+    userLimits: UserOfframpLimits | null;
+    isLoadingLimits: boolean;
+
     // Controls
     reset: () => void;
     goBack: () => void;
@@ -112,6 +117,10 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
     const [bridgeTxHash, setBridgeTxHash] = useState<string | null>(null);
     const [payoutStatus, setPayoutStatus] = useState<QuoteStatusData | null>(null);
 
+    // User Limits State
+    const [userLimits, setUserLimits] = useState<UserOfframpLimits | null>(null);
+    const [isLoadingLimits, setIsLoadingLimits] = useState(false);
+
     // Polling refs
     const payoutPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     // Abort controller ref for component-level cleanup
@@ -124,6 +133,39 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
             abortRef.current?.abort();
         };
     }, []);
+
+    // ---------- Effects: User Limits ----------
+
+    useEffect(() => {
+        if (!isConnected || !address) {
+            setUserLimits(null);
+            return;
+        }
+
+        const controller = new AbortController();
+
+        const fetchLimits = async () => {
+            setIsLoadingLimits(true);
+            try {
+                const result = await offrampService.getUserLimits(address, controller.signal);
+                if (controller.signal.aborted) return;
+                if (result.success && result.data) {
+                    setUserLimits(result.data);
+                } else {
+                    // Non-fatal: proceed without limits if fetch fails
+                    console.warn("Failed to fetch user offramp limits:", result.error);
+                }
+            } catch (error) {
+                if (controller.signal.aborted) return;
+                console.warn("Error fetching user offramp limits:", error);
+            } finally {
+                if (!controller.signal.aborted) setIsLoadingLimits(false);
+            }
+        };
+
+        fetchLimits();
+        return () => controller.abort();
+    }, [isConnected, address]);
 
     // ---------- Handlers ----------
 
@@ -298,6 +340,16 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
                 return;
             }
 
+            // Validate against user's daily tier limit before proceeding to signature
+            if (userLimits && amount > userLimits.remainingDaily) {
+                setError(
+                    `Amount exceeds your daily offramp limit. ` +
+                    `Remaining: ${userLimits.remainingDaily.toLocaleString()} ${form.token} ` +
+                    `(Daily limit: ${userLimits.dailyLimit.toLocaleString()} ${form.token})`
+                );
+                return;
+            }
+
             setIsLoading(true);
             setError(null);
 
@@ -339,7 +391,7 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
                 if (!controller.signal.aborted) setIsLoading(false);
             }
         },
-        [isConnected, address, quote]
+        [isConnected, address, quote, userLimits]
     );
 
     // ---------- Confirm & Process ----------
@@ -445,5 +497,7 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
         quoteError,
         isVerifyingAccount,
         isLoadingBanks,
+        userLimits,
+        isLoadingLimits,
     };
 }
