@@ -20,6 +20,11 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { StreamRecord } from "@/lib/validations";
 import { STELLAR_EXPERT_URL } from "@/lib/constants";
 import { WithdrawStreamModal } from "./WithdrawStreamModal";
@@ -166,14 +171,31 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
                         </DropdownMenuItem>
                     )}
 
-                    {isSender && (isActive || isPaused) && stream.cancelable && (
-                        <DropdownMenuItem
-                            className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
-                            onClick={handleCancel}
-                        >
-                            <XCircle className="mr-2 h-4 w-4" />
-                            Cancel Stream
-                        </DropdownMenuItem>
+                    {isSender && (isActive || isPaused) && (
+                        stream.cancelable ? (
+                            <DropdownMenuItem
+                                className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
+                                onClick={handleCancel}
+                            >
+                                <XCircle className="mr-2 h-4 w-4" />
+                                Cancel Stream
+                            </DropdownMenuItem>
+                        ) : (
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <DropdownMenuItem
+                                        className="text-red-500/50 cursor-not-allowed"
+                                        disabled
+                                    >
+                                        <XCircle className="mr-2 h-4 w-4" />
+                                        Cancel Stream
+                                    </DropdownMenuItem>
+                                </TooltipTrigger>
+                                <TooltipContent side="left">
+                                    This stream was configured as non-cancelable
+                                </TooltipContent>
+                            </Tooltip>
+                        )
                     )}
 
                     {isSender && (
