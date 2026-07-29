@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { StellarService } from "./stellar"
+import { validateContractId } from "./stream-validation"
 
 // Stream record type for display
 export interface StreamRecord {
@@ -26,7 +27,11 @@ export const paymentStreamSchema = z.object({
   
   token: z
     .string()
-    .min(1, "Token selection is required"),
+    .min(1, "Token selection is required")
+    .refine(
+      (val) => val === "native" || validateContractId(val),
+      "Invalid token: must be 'native' or a valid Stellar contract ID"
+    ),
   
   totalAmount: z
     .string()
