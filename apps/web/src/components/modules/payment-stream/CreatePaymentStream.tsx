@@ -101,7 +101,7 @@ const CreatePaymentStream = () => {
           data.duration === 'week' ? 604800 :
             data.duration === 'month' ? 2592000 : 31536000;
       const durationInSeconds = Math.floor(parseFloat(data.durationValue) * durationMultiplier);
-      const startTime = BigInt(Math.floor(Date.now() / 1000));
+      const startTime = BigInt(Math.floor(Date.now() / 1000) + 60); // 60s buffer for on-chain latency
 
       const fee = await realStellarService.getStreamCreationFeeEstimate({
         recipient: data.recipient,
