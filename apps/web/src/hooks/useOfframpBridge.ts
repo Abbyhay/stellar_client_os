@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState, useRef, useEffect } from "react";
+import toast from "react-hot-toast";
 import { useWallet } from "@/providers/StellarWalletProvider";
 import { offrampService } from "@/services/offramp.service";
 import type {
@@ -13,6 +14,33 @@ import type {
     ProviderRate,
 } from "@/types/offramp";
 import { SUPPORTED_OFFRAMP_TOKENS, getAccountNumberRules } from "@/types/offramp";
+
+const RATE_LIMIT_MESSAGE = "Rate limit exceeded. Please wait";
+
+function isRateLimitError(error: unknown): boolean {
+    if (typeof error === "object" && error !== null) {
+        if ("status" in error && error.status === 429) return true;
+
+        if (
+            "response" in error &&
+            typeof error.response === "object" &&
+            error.response !== null &&
+            "status" in error.response &&
+            error.response.status === 429
+        ) {
+            return true;
+        }
+    }
+
+    const message =
+        error instanceof Error
+            ? error.message
+            : typeof error === "string"
+                ? error
+                : "";
+
+    return /\b429\b|rate limit|too many requests/i.test(message);
+}
 
 interface UseOfframpBridgeReturn {
     // State
@@ -217,13 +245,26 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
                     setQuote(result.data.best);
                     setQuoteError(null);
                 } else {
+                    const rateLimited =
+                        result.status === 429 || isRateLimitError(result.error);
+                    const message = rateLimited
+                        ? RATE_LIMIT_MESSAGE
+                        : result.error || "No rates available";
+
                     setQuote(null);
-                    setQuoteError(result.error || "No rates available");
+                    setQuoteError(message);
+                    if (rateLimited) toast.error(message);
                 }
-            } catch {
+            } catch (error) {
                 if (!controller.signal.aborted) {
+                    const rateLimited = isRateLimitError(error);
+                    const message = rateLimited
+                        ? RATE_LIMIT_MESSAGE
+                        : "Failed to fetch rates";
+
                     setQuote(null);
-                    setQuoteError("Failed to fetch rates");
+                    setQuoteError(message);
+                    if (rateLimited) toast.error(message);
                 }
             } finally {
                 if (!controller.signal.aborted) setIsLoadingQuote(false);
