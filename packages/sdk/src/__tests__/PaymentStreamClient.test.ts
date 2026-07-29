@@ -12,6 +12,7 @@ const mockTx = (result: unknown = undefined) => ({
   result,
   signAndSend: mockSignAndSend,
 });
+const mockTxNone = () => ({ result: undefined, signAndSend: mockSignAndSend });
 
 const mockContractClient = {
   create_stream: vi.fn(),

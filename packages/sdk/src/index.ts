@@ -39,6 +39,7 @@ export * from "./utils/streamHistory";
 export * from "./utils/BalanceWatcher";
 export * from "./utils/transactions";
 export * from "./utils/GasEstimator";
+export * from "./utils/rpcConnectionOptions";
 
 // Export error handling utilities
 export {

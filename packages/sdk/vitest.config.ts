@@ -22,7 +22,6 @@ export default defineConfig({
       include: ['src/**/*.ts'],
 
       // Exclude generated bindings, test files, and files with no executable logic.
-      // TODO: remove batchDistribution.ts from this list once its tests are written.
       exclude: [
         'src/generated/**',
         'src/**/__tests__/**',
@@ -33,7 +32,6 @@ export default defineConfig({
         'src/index.ts',                   // pure re-export barrel
         'src/deployer/index.ts',          // pure re-export barrel
         'src/deployer/types.ts',          // TypeScript type definitions only
-        'src/utils/batchDistribution.ts', // TODO: add tests (tracked in backlog)
       ],
 
       // text  → terminal summary on every run
