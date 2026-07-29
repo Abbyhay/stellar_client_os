@@ -63,6 +63,21 @@ const DEFAULT_TIMEOUT = 30; // seconds
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_BASE_FEE = '100'; // stroops
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function allowLocalHttp(url: string): boolean {
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

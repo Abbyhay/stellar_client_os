@@ -74,10 +74,13 @@ export function useWithdraw() {
                     queryClient.invalidateQueries({ queryKey: ['stream', variables.streamId] });
                 }
             }
-
-            toast.error('Withdraw failed. Refreshing latest data.');
         },
         onSettled: (_data, _error, variables) => {
+            // Only show error toast on final failure (after all retries)
+            if (_error) {
+                toast.error('Withdraw failed. Refreshing latest data.');
+            }
+
             queryClient.invalidateQueries({ queryKey: ['streams'] });
             if (typeof variables?.streamId === 'number') {
                 queryClient.invalidateQueries({ queryKey: ['stream', variables.streamId] });

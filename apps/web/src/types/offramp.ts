@@ -113,6 +113,7 @@ export interface ProviderRate {
 
 export interface AggregatedRatesResponse {
     success: boolean;
+    status?: number;
     data?: {
         best: ProviderRate | null;
         all: ProviderRate[];
@@ -174,6 +175,21 @@ export interface QuoteStatusData {
 export interface QuoteStatusResponse {
     success: boolean;
     data?: QuoteStatusData;
+    error?: string;
+}
+
+// ==================== USER LIMITS TYPES ====================
+
+export interface UserOfframpLimits {
+    dailyLimit: number;
+    dailyUsed: number;
+    remainingDaily: number;
+    tier: string;
+}
+
+export interface UserLimitsResponse {
+    success: boolean;
+    data?: UserOfframpLimits;
     error?: string;
 }
 
