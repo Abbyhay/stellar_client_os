@@ -56,104 +56,8 @@ function ensureSafeNumber(value: bigint): number {
     return Number(value);
 }
 
-function extractBigInt(value: unknown): bigint | undefined {
-    if (typeof value === 'bigint') return value;
-    if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-    if (typeof value === 'string' && /^[0-9]+$/.test(value)) return BigInt(value);
-    if (typeof value !== 'object' || value === null) return undefined;
-
-    try {
-        const native = scValToNative(value as never);
-        if (native === value) return undefined;
-        return extractBigInt(native);
-    } catch {
-        return undefined;
-    }
-}
-
-function normalizeEventTopicItem(item: unknown): string | undefined {
-    if (typeof item === 'string') return item;
-    if (typeof item !== 'object' || item === null) return undefined;
-    try {
-        const native = scValToNative(item as never);
-        return typeof native === 'string' ? native : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
-function normalizeContractEventRaw(event: unknown): ContractEventRaw | undefined {
-    if (typeof event !== 'object' || event === null) return undefined;
-
-    const item = event as Record<string, unknown>;
-    const contract_id =
-        typeof item.contract_id === 'string'
-            ? item.contract_id
-            : typeof item.contractId === 'string'
-                ? item.contractId
-                : undefined;
-
-    const topicRaw = item.topic ?? item.topics;
-    if (!contract_id || !Array.isArray(topicRaw)) return undefined;
-
-    const topic = topicRaw.map(normalizeEventTopicItem);
-    if (topic.some((x) => typeof x !== 'string')) return undefined;
-
-    const valueRaw = item.value;
-    let value: unknown = valueRaw;
-    if (valueRaw && typeof valueRaw === 'object') {
-        try {
-            value = scValToNative(valueRaw as never);
-        } catch {
-            value = valueRaw;
-        }
-    }
-
-    return { contract_id, topic: topic as string[], value };
-}
-
-function extractStreamIdFromTxEvents(tx: unknown): bigint | undefined {
-    if (typeof tx !== 'object' || tx === null) return undefined;
-
-    const item = tx as Record<string, unknown>;
-    const events =
-        item.events ??
-        (typeof item.simulation === 'object' && item.simulation !== null
-            ? (item.simulation as Record<string, unknown>).events
-            : undefined) ??
-        (typeof item.simulationResult === 'object' && item.simulationResult !== null
-            ? (item.simulationResult as Record<string, unknown>).events
-            : undefined);
-
-    if (!Array.isArray(events)) return undefined;
-
-    const normalized: ContractEventRaw[] = [];
-    for (const event of events) {
-        const raw = normalizeContractEventRaw(event);
-        if (raw) normalized.push(raw);
-    }
-
-    if (normalized.length === 0) return undefined;
-
-    const parser = new SorobanEventParser({ contractId: PAYMENT_STREAM_CONTRACT_ID });
-    const { parsed } = parser.parseAll(normalized);
-
-    for (const evt of parsed) {
-        const payload = (evt as unknown as { payload?: unknown }).payload;
-        if (typeof payload !== 'object' || payload === null) continue;
-        const candidate =
-            (payload as Record<string, unknown>).stream_id ??
-            (payload as Record<string, unknown>).streamId ??
-            (payload as Record<string, unknown>).id;
-        const streamId = extractBigInt(candidate);
-        if (streamId !== undefined) return streamId;
-    }
-
-    return undefined;
-}
-
-async function signAndSendTx(
-    tx: AssembledTransaction<unknown>,
+async function signAndSendTx<T>(
+    tx: AssembledTransaction<T>,
     signTransaction?: WalletSigner
 ): Promise<void> {
     if (!signTransaction) {
@@ -219,7 +123,7 @@ export async function createStream(params: {
         end_time: BigInt(params.endTime),
     });
 
-    await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+    await signAndSendTx(tx, params.signTransaction);
 
     const streamId = extractBigInt(tx.result) ?? extractStreamIdFromTxEvents(tx);
     if (streamId === undefined) {
@@ -246,7 +150,7 @@ export async function withdraw(params: {
 
     const client = createPaymentStreamClient(sender);
     const tx = await client.withdraw(BigInt(params.streamId), params.amount);
-    await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+    await signAndSendTx(tx, params.signTransaction);
 }
 
 import { createBatches } from '../../../../packages/sdk/src/utils/batchDistribution';
@@ -270,7 +174,7 @@ export async function distribute(params: {
                 total_amount: params.amounts,
                 recipients: batch,
             });
-            await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+            await signAndSendTx(tx, params.signTransaction);
         }
         return;
     }
@@ -289,7 +193,7 @@ export async function distribute(params: {
             recipients: recipientBatches[i],
             amounts: amountBatches[i],
         });
-        await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+        await signAndSendTx(tx, params.signTransaction);
     }
 }
 
@@ -310,7 +214,7 @@ export async function pauseStream(params: { id: string; signTransaction: (xdr: s
 
     const tx = await client.pauseStream(BigInt(params.id));
 
-    await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+    await signAndSendTx(tx, params.signTransaction);
 }
 
 export async function resumeStream(params: { id: string; signTransaction: (xdr: string) => Promise<string> }) {
@@ -322,7 +226,7 @@ export async function resumeStream(params: { id: string; signTransaction: (xdr: 
 
     const tx = await client.resumeStream(BigInt(params.id));
 
-    await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+    await signAndSendTx(tx, params.signTransaction);
 }
 
 export async function cancelStream(params: { id: string; signTransaction: (xdr: string) => Promise<string> }) {
@@ -334,5 +238,5 @@ export async function cancelStream(params: { id: string; signTransaction: (xdr: 
 
     const tx = await client.cancelStream(BigInt(params.id));
 
-    await signAndSendTx(tx as AssembledTransaction<unknown>, params.signTransaction);
+    await signAndSendTx(tx, params.signTransaction);
 }
