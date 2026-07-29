@@ -10,6 +10,7 @@ import type {
 } from "@/types/offramp";
 import type { BridgeQuote } from "@/services/allbridge.service";
 import { createAbortError } from "@/utils/retry";
+import { calculateOfframpFee, calculateOfframpFiatAmount } from "@/utils/offramp-fee";
 
 const DEFAULT_DELAYS = {
   sync: 250,
@@ -115,8 +116,8 @@ const buildProviderRates = (
   const baseRate = currencyRates[country];
   const jitter = 1 + (Math.random() * 0.02 - 0.01);
   const rate = baseRate * jitter;
-  const fee = Math.max(0.5, amount * 0.004) * rate;
-  const fiatAmount = Math.max(0, amount * rate - fee);
+  const fee = calculateOfframpFee(amount, rate);
+  const fiatAmount = Math.max(0, calculateOfframpFiatAmount(amount, rate));
 
   const now = Date.now();
   const expiry = new Date(now + 5 * 60 * 1000).toISOString();
@@ -236,7 +237,7 @@ export const mockOfframpService = {
     const reference = createReference();
     const depositAmount = Number(request.amount.toFixed(2));
     const rate = currencyRates[request.country as OfframpCountry] || 1;
-    const fiatAmount = Number((depositAmount * rate * 0.985).toFixed(2));
+    const fiatAmount = Number(calculateOfframpFiatAmount(depositAmount, rate).toFixed(2));
 
     mockQuotes.set(reference, {
       createdAt: Date.now(),
