@@ -9,6 +9,7 @@ pub enum StreamStatus {
     Paused,
     Canceled,
     Completed,
+    Disputed,
 }
 
 /// Stream data structure
@@ -50,6 +51,49 @@ pub struct ProtocolMetrics {
     pub total_tokens_streamed: i128,  // Total tokens ever streamed
     pub total_streams_created: u64,   // Total number of streams created
     pub total_delegations: u64,       // Total number of delegations across all streams
+}
+
+/// A dispute resolution that has been decided but is queued behind a
+/// mandatory timelock before its payout can be executed.
+#[contracttype]
+#[derive(Clone)]
+pub struct QueuedResolution {
+    pub dispute_id: u64,
+    pub stream_id: u64,
+    pub recipient_amount: i128,
+    pub sender_amount: i128,
+    pub execute_after: u64,
+    pub executed: bool,
+    pub previous_status: StreamStatus,
+}
+
+/// Dispute queued event data
+#[contracttype]
+#[derive(Clone)]
+pub struct DisputeQueuedEvent {
+    pub dispute_id: u64,
+    pub stream_id: u64,
+    pub recipient_amount: i128,
+    pub sender_amount: i128,
+    pub execute_after: u64,
+}
+
+/// Dispute executed event data
+#[contracttype]
+#[derive(Clone)]
+pub struct DisputeExecutedEvent {
+    pub dispute_id: u64,
+    pub stream_id: u64,
+    pub recipient_amount: i128,
+    pub sender_amount: i128,
+}
+
+/// Dispute canceled event data
+#[contracttype]
+#[derive(Clone)]
+pub struct DisputeCanceledEvent {
+    pub dispute_id: u64,
+    pub stream_id: u64,
 }
 
 /// Fee collected event data
@@ -123,12 +167,19 @@ pub enum Error {
     DepositExceedsTotal = 14,
     ArithmeticOverflow = 15,
     InvalidDelegate = 16,
+    DisputeInProgress = 17,
+    DisputeAlreadyQueued = 18,
+    DisputeNotFound = 19,
+    DisputeAlreadyExecuted = 20,
+    TimelockNotElapsed = 21,
+    InvalidResolutionAmounts = 22,
 }
 
 // Constants
 const MAX_FEE: u32 = 500; // 5% in basis points
 const LEDGER_THRESHOLD: u32 = 518400; // ~30 days at 5s/ledger
 const LEDGER_BUMP: u32 = 535680; // ~31 days
+const DISPUTE_TIMELOCK_DELAY: u64 = 172800; // 48 hours in seconds
 
 #[contract]
 pub struct PaymentStreamContract;
@@ -259,6 +310,9 @@ impl PaymentStreamContract {
 
         if matches!(stream.status, StreamStatus::Canceled | StreamStatus::Completed) {
             panic_with_error!(&env, Error::StreamNotActive);
+        }
+        if stream.status == StreamStatus::Disputed {
+            panic_with_error!(&env, Error::DisputeInProgress);
         }
 
         stream.sender.require_auth();
@@ -758,6 +812,209 @@ impl PaymentStreamContract {
                 total_streams_created: 0,
                 total_delegations: 0,
             })
+    }
+
+    /// Record a decided dispute resolution outcome for a stream and queue
+    /// its payout behind a mandatory 48-hour timelock (admin/arbiter only).
+    ///
+    /// The stream is moved into `Disputed` status for the duration of the
+    /// timelock, blocking deposits, withdrawals, pausing, resuming, and
+    /// cancellation until the resolution is either executed via
+    /// [`Self::execute_resolution`] or reversed via
+    /// [`Self::cancel_queued_resolution`]. `recipient_amount` and
+    /// `sender_amount` are drawn from the stream's currently escrowed,
+    /// unwithdrawn balance and must not exceed it.
+    ///
+    /// Returns the id of the queued dispute.
+    pub fn resolve_dispute(
+        env: Env,
+        stream_id: u64,
+        recipient_amount: i128,
+        sender_amount: i128,
+    ) -> u64 {
+        let admin: Address = env.storage().instance().get(&Symbol::new(&env, "admin")).unwrap();
+        admin.require_auth();
+
+        let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
+
+        if stream.status == StreamStatus::Disputed {
+            panic_with_error!(&env, Error::DisputeAlreadyQueued);
+        }
+        if stream.status != StreamStatus::Active && stream.status != StreamStatus::Paused {
+            panic_with_error!(&env, Error::StreamNotActive);
+        }
+
+        if recipient_amount < 0 || sender_amount < 0 {
+            panic_with_error!(&env, Error::InvalidResolutionAmounts);
+        }
+
+        let total_resolution = recipient_amount.checked_add(sender_amount)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+
+        let escrowed_balance = stream.balance - stream.withdrawn_amount;
+        if total_resolution <= 0 || total_resolution > escrowed_balance {
+            panic_with_error!(&env, Error::InvalidResolutionAmounts);
+        }
+
+        let previous_status = stream.status;
+        let was_active = stream.status == StreamStatus::Active;
+        stream.status = StreamStatus::Disputed;
+
+        env.storage().persistent().set(&stream_id, &stream);
+        env.storage().persistent().extend_ttl(&stream_id, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        if was_active {
+            let mut protocol_metrics: ProtocolMetrics = env.storage().instance()
+                .get(&Symbol::new(&env, "protocol_metrics"))
+                .unwrap();
+            protocol_metrics.total_active_streams = protocol_metrics.total_active_streams.saturating_sub(1);
+            env.storage().instance().set(&Symbol::new(&env, "protocol_metrics"), &protocol_metrics);
+            env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+
+        // Allocate a new dispute id
+        let mut dispute_count: u64 = env.storage().instance().get(&Symbol::new(&env, "dispute_count")).unwrap_or(0);
+        dispute_count += 1;
+        let dispute_id = dispute_count;
+        env.storage().instance().set(&Symbol::new(&env, "dispute_count"), &dispute_count);
+        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        let execute_after = env.ledger().timestamp() + DISPUTE_TIMELOCK_DELAY;
+
+        let queued = QueuedResolution {
+            dispute_id,
+            stream_id,
+            recipient_amount,
+            sender_amount,
+            execute_after,
+            executed: false,
+            previous_status,
+        };
+
+        let dispute_key = (Symbol::new(&env, "dispute"), dispute_id);
+        env.storage().persistent().set(&dispute_key, &queued);
+        env.storage().persistent().extend_ttl(&dispute_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        let active_dispute_key = (stream_id, Symbol::new(&env, "active_dispute"));
+        env.storage().persistent().set(&active_dispute_key, &dispute_id);
+        env.storage().persistent().extend_ttl(&active_dispute_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events().publish(
+            ("DisputeQueued", stream_id),
+            DisputeQueuedEvent {
+                dispute_id,
+                stream_id,
+                recipient_amount,
+                sender_amount,
+                execute_after,
+            },
+        );
+
+        dispute_id
+    }
+
+    /// Execute a queued dispute resolution once its 48-hour timelock has
+    /// elapsed. Callable by anyone, since the outcome and amounts were
+    /// already fixed and authorized when the dispute was queued; only the
+    /// passage of time gates execution.
+    pub fn execute_resolution(env: Env, dispute_id: u64) {
+        let dispute_key = (Symbol::new(&env, "dispute"), dispute_id);
+        let mut queued: QueuedResolution = env.storage().persistent()
+            .get(&dispute_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::DisputeNotFound));
+
+        if queued.executed {
+            panic_with_error!(&env, Error::DisputeAlreadyExecuted);
+        }
+
+        if env.ledger().timestamp() < queued.execute_after {
+            panic_with_error!(&env, Error::TimelockNotElapsed);
+        }
+
+        let mut stream: Stream = Self::get_stream(env.clone(), queued.stream_id);
+
+        let token_client = token::Client::new(&env, &stream.token);
+        if queued.recipient_amount > 0 {
+            token_client.transfer(&env.current_contract_address(), &stream.recipient, &queued.recipient_amount);
+        }
+        if queued.sender_amount > 0 {
+            token_client.transfer(&env.current_contract_address(), &stream.sender, &queued.sender_amount);
+        }
+
+        stream.withdrawn_amount += queued.recipient_amount;
+        stream.status = StreamStatus::Completed;
+
+        env.storage().persistent().set(&queued.stream_id, &stream);
+        env.storage().persistent().extend_ttl(&queued.stream_id, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        queued.executed = true;
+        env.storage().persistent().set(&dispute_key, &queued);
+        env.storage().persistent().extend_ttl(&dispute_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.storage().persistent().remove(&(queued.stream_id, Symbol::new(&env, "active_dispute")));
+
+        env.events().publish(
+            ("DisputeExecuted", queued.stream_id),
+            DisputeExecutedEvent {
+                dispute_id,
+                stream_id: queued.stream_id,
+                recipient_amount: queued.recipient_amount,
+                sender_amount: queued.sender_amount,
+            },
+        );
+    }
+
+    /// Cancel a queued dispute resolution before its timelock elapses
+    /// (admin/arbiter only), restoring the stream to its pre-dispute
+    /// status, e.g. if new evidence emerges during the delay window.
+    pub fn cancel_queued_resolution(env: Env, dispute_id: u64) {
+        let admin: Address = env.storage().instance().get(&Symbol::new(&env, "admin")).unwrap();
+        admin.require_auth();
+
+        let dispute_key = (Symbol::new(&env, "dispute"), dispute_id);
+        let queued: QueuedResolution = env.storage().persistent()
+            .get(&dispute_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::DisputeNotFound));
+
+        if queued.executed {
+            panic_with_error!(&env, Error::DisputeAlreadyExecuted);
+        }
+
+        let mut stream: Stream = Self::get_stream(env.clone(), queued.stream_id);
+        stream.status = queued.previous_status;
+
+        env.storage().persistent().set(&queued.stream_id, &stream);
+        env.storage().persistent().extend_ttl(&queued.stream_id, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        if queued.previous_status == StreamStatus::Active {
+            let mut protocol_metrics: ProtocolMetrics = env.storage().instance()
+                .get(&Symbol::new(&env, "protocol_metrics"))
+                .unwrap();
+            protocol_metrics.total_active_streams += 1;
+            env.storage().instance().set(&Symbol::new(&env, "protocol_metrics"), &protocol_metrics);
+            env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+
+        env.storage().persistent().remove(&dispute_key);
+        env.storage().persistent().remove(&(queued.stream_id, Symbol::new(&env, "active_dispute")));
+
+        env.events().publish(
+            ("DisputeCanceled", queued.stream_id),
+            DisputeCanceledEvent {
+                dispute_id,
+                stream_id: queued.stream_id,
+            },
+        );
+    }
+
+    /// Get a queued dispute resolution by id, if it exists
+    pub fn get_queued_resolution(env: Env, dispute_id: u64) -> Option<QueuedResolution> {
+        env.storage().persistent().get(&(Symbol::new(&env, "dispute"), dispute_id))
+    }
+
+    /// Get the id of the currently active (unresolved) dispute for a stream, if any
+    pub fn get_active_dispute(env: Env, stream_id: u64) -> Option<u64> {
+        env.storage().persistent().get(&(stream_id, Symbol::new(&env, "active_dispute")))
     }
 }
 
