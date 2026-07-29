@@ -11,6 +11,12 @@
 import { AssembledTransaction } from '@stellar/stellar-sdk/contract';
 import type { DistributorClient, AddressParam } from '../DistributorClient';
 
+function assertPositiveInt(n: number, name: string): void {
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`${name} must be a positive integer (got ${n})`);
+  }
+}
+
 /**
  * Configuration for batch distribution operations.
  * 
@@ -153,6 +159,12 @@ export interface BatchDistributionResult {
   amountBatches?: bigint[][];
 }
 
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer (got ${value})`);
+  }
+}
+
 /**
  * Splits recipients into batches and creates assembled transactions for equal distribution.
  * 
@@ -169,7 +181,7 @@ export interface BatchDistributionResult {
  * @returns Promise containing batched transactions and split recipient lists
  * 
  * @throws {Error} If recipients array is empty
- * @throws {Error} If recipient count doesn't match amounts length (for weighted)
+ * @throws {Error} If maxRecipientsPerBatch is not a positive integer
  * 
  * @example
  * ```ts
@@ -197,6 +209,7 @@ export async function prepareBatchEqualDistribution(
 ): Promise<BatchDistributionResult> {
   const { sender, token, total_amount, recipients, config = {} } = params;
   const maxRecipientsPerBatch = config.maxRecipientsPerBatch ?? 100;
+  assertPositiveInt(maxRecipientsPerBatch, 'config.maxRecipientsPerBatch');
 
   if (recipients.length === 0) {
     throw new Error('Recipients array cannot be empty');
@@ -246,6 +259,7 @@ export async function prepareBatchEqualDistribution(
  * 
  * @throws {Error} If recipients array is empty
  * @throws {Error} If recipients and amounts arrays have different lengths
+ * @throws {Error} If maxRecipientsPerBatch is not a positive integer
  * 
  * @example
  * ```ts
@@ -280,6 +294,7 @@ export async function prepareBatchWeightedDistribution(
 ): Promise<BatchDistributionResult> {
   const { sender, token, recipients, amounts, config = {} } = params;
   const maxRecipientsPerBatch = config.maxRecipientsPerBatch ?? 100;
+  assertPositiveInt(maxRecipientsPerBatch, 'config.maxRecipientsPerBatch');
 
   if (recipients.length === 0) {
     throw new Error('Recipients array cannot be empty');
@@ -341,6 +356,8 @@ export async function prepareBatchWeightedDistribution(
  * \`\`\`
  */
 export function createBatches<T>(array: T[], batchSize: number): T[][] {
+  assertPositiveInt(batchSize, 'batchSize');
+
   const batches: T[][] = [];
   
   for (let i = 0; i < array.length; i += batchSize) {

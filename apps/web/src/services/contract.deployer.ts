@@ -8,6 +8,7 @@ import {
   StrKey,
 } from '@stellar/stellar-sdk';
 import { Server as RpcServer, Api, assembleTransaction } from '@stellar/stellar-sdk/rpc';
+import { getStellarServerOptions } from '@/utils/rpc-connection-options';
 
 interface DeployConfig {
   rpcUrl: string;
@@ -34,9 +35,7 @@ export class ContractDeployer {
   private networkPassphrase: string;
 
   constructor(config: DeployConfig) {
-    this.rpcServer = new RpcServer(config.rpcUrl, {
-      allowHttp: allowLocalHttp(config.rpcUrl),
-    });
+    this.rpcServer = new RpcServer(config.rpcUrl, getStellarServerOptions(config.rpcUrl));
     this.networkPassphrase = config.networkPassphrase;
   }
 

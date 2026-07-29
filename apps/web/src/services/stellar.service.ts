@@ -56,6 +56,7 @@ import {
   parseError,
 } from './errors';
 import { isAbortError, withAbortSignal, withRetry } from '@/utils/retry';
+import { getStellarServerOptions } from '@/utils/rpc-connection-options';
 
 // Default configuration values
 const DEFAULT_TIMEOUT = 30; // seconds
@@ -95,12 +96,14 @@ export class StellarService {
   private readonly maxRetries: number;
 
   constructor(config: StellarServiceConfig) {
-    this.rpcServer = new RpcServer(config.network.rpcUrl, {
-      allowHttp: allowLocalHttp(config.network.rpcUrl),
-    });
-    this.horizonServer = new Horizon.Server(config.network.horizonUrl, {
-      allowHttp: allowLocalHttp(config.network.horizonUrl),
-    });
+    this.rpcServer = new RpcServer(
+      config.network.rpcUrl,
+      getStellarServerOptions(config.network.rpcUrl)
+    );
+    this.horizonServer = new Horizon.Server(
+      config.network.horizonUrl,
+      getStellarServerOptions(config.network.horizonUrl)
+    );
     this.networkPassphrase = config.network.networkPassphrase;
     this.paymentStreamContractId = config.contracts.paymentStream;
     this.distributorContractId = config.contracts.distributor;

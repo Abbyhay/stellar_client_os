@@ -1,6 +1,6 @@
 import { xdr } from "@stellar/stellar-sdk";
 import { Server, Api } from "@stellar/stellar-sdk/rpc";
-import { shouldAllowLocalHttp } from "./httpSecurity.js";
+import { resolveRpcServerOptions } from "./rpcConnectionOptions";
 
 const DEFAULT_BASE_FEE = "100";
 const DEFAULT_RESOURCE_BUFFER = 1.2;
@@ -31,6 +31,8 @@ export interface GasEstimatorOptions {
   congestionBuffer?: number;
   /** Multiplier applied to fee recommendations under high/severe congestion. Defaults to 1.35. */
   highCongestionBuffer?: number;
+  /** Opt in to plain HTTP for local loopback RPC URLs. Defaults to false. */
+  allowHttp?: boolean;
 }
 
 export type CongestionLevel =
@@ -106,11 +108,10 @@ export class GasEstimator {
       throw new Error("GasEstimator requires either rpc or rpcUrl");
     }
 
-    this.rpc =
-      options.rpc ??
-      new Server(options.rpcUrl!, {
-        allowHttp: shouldAllowLocalHttp(options.rpcUrl!, options.allowHttp),
-      });
+    this.rpc = options.rpc ?? new Server(
+      options.rpcUrl!,
+      resolveRpcServerOptions(options.rpcUrl!, { allowHttp: options.allowHttp })
+    );
     this.baseFee = assertStroopString(
       options.baseFee ?? DEFAULT_BASE_FEE,
       "baseFee"

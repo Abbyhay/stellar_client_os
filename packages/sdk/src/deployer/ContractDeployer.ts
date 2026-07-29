@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   Keypair,
   TransactionBuilder,
@@ -28,7 +29,8 @@ import {
   FeeEstimationError,
   DeploymentTimeoutError,
 } from './errors';
-import { shouldAllowLocalHttp } from '../utils/httpSecurity.js';
+import { resolveRpcServerOptions } from '../utils/rpcConnectionOptions';
+import { secureRandomBytes } from '../utils/secureRandom';
 
 const DEFAULT_BASE_FEE = '100';
 const DEFAULT_TIMEOUT = 60;
@@ -71,9 +73,10 @@ export class ContractDeployer {
   private passphrasePromise: Promise<string> | undefined;
 
   constructor(config: DeployerConfig) {
-    this.rpc = new Server(config.rpcUrl, {
-      allowHttp: this.getAllowHttp(config.rpcUrl, config.allowHttp),
-    });
+    this.rpc = new Server(
+      config.rpcUrl,
+      resolveRpcServerOptions(config.rpcUrl, { allowHttp: config.allowHttp })
+    );
     this.networkPassphrase = config.networkPassphrase;
     this.baseFee = config.baseFee ?? DEFAULT_BASE_FEE;
     this.timeoutSeconds = config.timeoutSeconds ?? DEFAULT_TIMEOUT;
@@ -567,9 +570,7 @@ export class ContractDeployer {
   }
 
   private randomSalt(): Buffer {
-    const buf = Buffer.alloc(32);
-    for (let i = 0; i < 32; i++) buf[i] = Math.floor(Math.random() * 256);
-    return buf;
+    return secureRandomBytes(32);
   }
 }
 

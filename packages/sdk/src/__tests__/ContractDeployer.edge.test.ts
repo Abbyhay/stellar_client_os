@@ -550,6 +550,26 @@ describe('ContractDeployer — edge cases', () => {
       expect(Buffer.compare(lastSalt1 ?? Buffer.alloc(0), lastSalt2 ?? Buffer.alloc(1))).not.toBe(0);
     });
 
+    it('generates 32-byte salts with crypto randomness, independent of Math.random', () => {
+      const mathRandom = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+      try {
+        const privateDeployer = deployer as unknown as { randomSalt: () => Buffer };
+        const salt1 = privateDeployer.randomSalt();
+        const salt2 = privateDeployer.randomSalt();
+        const mathRandomSalt = Buffer.alloc(32, 128);
+
+        expect(salt1).toHaveLength(32);
+        expect(salt2).toHaveLength(32);
+        expect(salt1.equals(mathRandomSalt)).toBe(false);
+        expect(salt2.equals(mathRandomSalt)).toBe(false);
+        expect(Buffer.compare(salt1, salt2)).not.toBe(0);
+        expect(mathRandom).not.toHaveBeenCalled();
+      } finally {
+        mathRandom.mockRestore();
+      }
+    });
+
     it('different passphrase => hash() called with different passphrase bytes', async () => {
       const { hash: mockHash } = await import('@stellar/stellar-sdk');
       const salt = Buffer.alloc(32, 0x55);
@@ -610,6 +630,34 @@ describe('ContractDeployer — edge cases', () => {
     it('does not call getNetwork when passphrase is provided in config', async () => {
       await deployer.getNetworkPassphrase();
       expect(mockGetNetwork).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Cryptographic salt generation ─────────────────────────────────────────
+  describe('randomSalt', () => {
+    it('generates distinct 32-byte salts on consecutive calls', () => {
+      const randomSalt = (deployer as unknown as { randomSalt: () => Buffer }).randomSalt.bind(
+        deployer
+      );
+      const salt1 = randomSalt();
+      const salt2 = randomSalt();
+
+      expect(salt1).toHaveLength(32);
+      expect(salt2).toHaveLength(32);
+      expect(Buffer.compare(salt1, salt2)).not.toBe(0);
+    });
+
+    it('does not derive salts from Math.random', () => {
+      const mathRandomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const randomSalt = (deployer as unknown as { randomSalt: () => Buffer }).randomSalt.bind(
+        deployer
+      );
+
+      const salt = randomSalt();
+      expect(salt).toHaveLength(32);
+      expect(mathRandomSpy).not.toHaveBeenCalled();
+
+      mathRandomSpy.mockRestore();
     });
   });
 

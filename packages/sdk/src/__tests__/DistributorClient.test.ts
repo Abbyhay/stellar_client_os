@@ -10,6 +10,8 @@ const mockTx = (result: unknown = undefined) => ({
   signAndSend: vi.fn(),
 });
 
+const mockTxNone = () => ({ result: undefined, signAndSend: vi.fn() });
+
 const mockContractClient = {
   distribute_equal: vi.fn(),
   distribute_weighted: vi.fn(),
