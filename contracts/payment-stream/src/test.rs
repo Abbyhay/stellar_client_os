@@ -1829,5 +1829,218 @@ fn test_withdraw_after_pause_and_resume() {
     assert!(recipient_balance > 0);
     assert_eq!(recipient_balance, 600); // 100 + 500
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Emergency pause tests (#510)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Shared setup: env + initialised contract + funded sender stream
+fn setup_with_stream() -> (
+    Env,
+    Address,        // contract_id
+    Address,        // admin
+    Address,        // sender
+    Address,        // recipient
+    Address,        // token
+    u64,            // stream_id
+    PaymentStreamContractClient<'static>,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let token = sac.address();
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let token_admin = token::StellarAssetClient::new(&env, &token);
+    token_admin.mint(&sender, &10000);
+
+    let stream_id = client.create_stream(&sender, &recipient, &token, &1000, &1000, &0, &200);
+
+    (env, contract_id, admin, sender, recipient, token, stream_id, client)
+}
+
+// ── is_paused ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_is_paused_false_by_default() {
+    let (_, _, _, _, _, _, _, client) = setup_with_stream();
+    assert!(!client.is_paused());
+}
+
+// ── emergency_pause / emergency_unpause ──────────────────────────────────────
+
+#[test]
+fn test_emergency_pause_sets_flag() {
+    let (_, _, _, _, _, _, _, client) = setup_with_stream();
+    client.emergency_pause();
+    assert!(client.is_paused());
+}
+
+#[test]
+fn test_emergency_unpause_clears_flag() {
+    let (_, _, _, _, _, _, _, client) = setup_with_stream();
+    client.emergency_pause();
+    assert!(client.is_paused());
+    client.emergency_unpause();
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn test_emergency_pause_emits_event() {
+    let (env, _, _, _, _, _, _, client) = setup_with_stream();
+    client.emergency_pause();
+    let events = env.events().all();
+    assert!(events.len() >= 1);
+}
+
+#[test]
+fn test_emergency_unpause_emits_event() {
+    let (env, _, _, _, _, _, _, client) = setup_with_stream();
+    client.emergency_pause();
+    let before = env.events().all().len();
+    client.emergency_unpause();
+    let after = env.events().all().len();
+    assert!(after > before);
+}
+
+#[test]
+fn test_pause_unpause_cycle_idempotent() {
+    let (_, _, _, _, _, _, _, client) = setup_with_stream();
+    // Can pause/unpause multiple times without error
+    client.emergency_pause();
+    client.emergency_unpause();
+    client.emergency_pause();
+    client.emergency_unpause();
+    assert!(!client.is_paused());
+}
+
+// ── withdraw blocked while paused ────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")]
+fn test_withdraw_blocked_when_paused() {
+    let (env, _, _, _, _, _, stream_id, client) = setup_with_stream();
+    env.ledger().set_timestamp(100);
+    client.emergency_pause();
+    client.withdraw(&stream_id, &500);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")]
+fn test_withdraw_max_blocked_when_paused() {
+    let (env, _, _, _, _, _, stream_id, client) = setup_with_stream();
+    env.ledger().set_timestamp(100);
+    client.emergency_pause();
+    client.withdraw_max(&stream_id);
+}
+
+// ── deposit blocked while paused ─────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")]
+fn test_deposit_blocked_when_paused() {
+    let (env, _, admin, sender, recipient, token, _, client) = setup_with_stream();
+    let token_admin = token::StellarAssetClient::new(&env, &token);
+    token_admin.mint(&sender, &500);
+    // Create a stream with balance < total so deposit is valid
+    let stream_id2 = client.create_stream(&sender, &recipient, &token, &2000, &500, &0, &200);
+    client.emergency_pause();
+    client.deposit(&stream_id2, &100);
+}
+
+// ── create_stream blocked while paused ───────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")]
+fn test_create_stream_blocked_when_paused() {
+    let (env, _, _, sender, recipient, token, _, client) = setup_with_stream();
+    let token_admin = token::StellarAssetClient::new(&env, &token);
+    token_admin.mint(&sender, &1000);
+    client.emergency_pause();
+    client.create_stream(&sender, &recipient, &token, &1000, &1000, &0, &100);
+}
+
+// ── operations allowed while paused ──────────────────────────────────────────
+
+#[test]
+fn test_cancel_stream_allowed_while_paused() {
+    // Senders must always be able to recover escrowed funds
+    let (_, _, _, _, _, _, stream_id, client) = setup_with_stream();
+    client.emergency_pause();
+    // cancel_stream should not panic
+    client.cancel_stream(&stream_id);
+}
+
+#[test]
+fn test_pause_stream_allowed_while_globally_paused() {
+    // Individual pause/resume of streams is still allowed
+    let (_, _, _, _, _, _, stream_id, client) = setup_with_stream();
+    client.emergency_pause();
+    client.pause_stream(&stream_id);
+}
+
+#[test]
+fn test_get_stream_allowed_while_paused() {
+    let (_, _, _, _, _, _, stream_id, client) = setup_with_stream();
+    client.emergency_pause();
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.id, stream_id);
+}
+
+#[test]
+fn test_withdrawable_amount_returns_value_while_paused() {
+    // Read-only queries are unaffected
+    let (env, _, _, _, _, _, stream_id, client) = setup_with_stream();
+    env.ledger().set_timestamp(100);
+    client.emergency_pause();
+    let available = client.withdrawable_amount(&stream_id);
+    assert!(available > 0);
+}
+
+// ── resume after unpause ──────────────────────────────────────────────────────
+
+#[test]
+fn test_withdraw_works_after_unpause() {
+    let (env, _, _, _, recipient, token, stream_id, client) = setup_with_stream();
+    env.ledger().set_timestamp(100);
+
+    client.emergency_pause();
+    // Confirm blocked
+    assert!(client.try_withdraw(&stream_id, &100).is_err());
+
+    client.emergency_unpause();
+    // Now succeeds
+    client.withdraw(&stream_id, &100);
+
+    let token_client = token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&recipient), 100);
+}
+
+#[test]
+fn test_create_stream_works_after_unpause() {
+    let (env, contract_id, _, sender, recipient, token, _, client) = setup_with_stream();
+    let token_admin = token::StellarAssetClient::new(&env, &token);
+    token_admin.mint(&sender, &500);
+
+    client.emergency_pause();
+    assert!(client.try_create_stream(&sender, &recipient, &token, &500, &500, &0, &100).is_err());
+
+    client.emergency_unpause();
+    let new_id = client.create_stream(&sender, &recipient, &token, &500, &500, &0, &100);
+    assert!(new_id > 0);
+
+    let token_client = token::Client::new(&env, &token);
+    // Tokens escrowed
+    assert!(token_client.balance(&contract_id) > 0);
+}
     
 }
