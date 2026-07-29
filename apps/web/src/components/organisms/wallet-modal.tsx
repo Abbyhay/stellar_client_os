@@ -33,6 +33,11 @@ export function WalletModal() {
 
   const handleConnectClick = async () => {
     if (activeSelection) {
+      if (document.body.dataset.formDirty === 'true') {
+        if (!window.confirm("You have unsaved changes. Are you sure you want to switch wallets? All form inputs will be lost.")) {
+          return;
+        }
+      }
       await connect(activeSelection);
     }
   };
