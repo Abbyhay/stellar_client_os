@@ -191,6 +191,22 @@ Follow the [STYLE_GUIDE.md](../../STYLE_GUIDE.md) for general TypeScript convent
 
 ## Troubleshooting
 
+### Local Soroban RPC over plain HTTP
+
+For local development against a Soroban node at `http://localhost:8000` (or `http://127.0.0.1`, `http://[::1]`), pass `allowHttp: true` explicitly. Remote `http://` URLs are rejected by default.
+
+```typescript
+import { ContractDeployer } from '@fundable/sdk';
+
+const deployer = new ContractDeployer({
+  rpcUrl: 'http://localhost:8000',
+  allowHttp: true,
+  networkPassphrase: 'Standalone Network ; February 2017',
+});
+```
+
+`allowHttp` defaults to `false`. Production integrations should use `https://` RPC endpoints only.
+
 ### "Cannot find module '@stellar/stellar-sdk'"
 
 Ensure the peer dependency is installed in your consuming project:

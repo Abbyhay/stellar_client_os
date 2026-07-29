@@ -56,7 +56,9 @@ export function processCSVText(
   text: string,
   distributionType: DistributionType
 ): CSVProcessingResult {
-  const lines = text.split('\n').map(line => line.trim()).filter(line => line);
+  // Normalize line endings to handle Windows-style CRLF
+  const normalizedText = text.replace(/\r\n/g, '\n');
+  const lines = normalizedText.split('\n').map(line => line.trim()).filter(line => line);
   const recipients: Recipient[] = [];
   const errors: CSVError[] = [];
   const warnings: CSVWarning[] = [];

@@ -187,6 +187,45 @@ export function deployStellarAssetContract(options: {
 }
 
 // ---------------------------------------------------------------------------
+// Token minting helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint tokens from a SAC issuer to a recipient address using stellar-cli.
+ * Used to give test accounts spendable token balances before running
+ * distribution tests.
+ */
+export async function mintTokens(options: {
+  tokenContractId: string;
+  issuerKeypair: Keypair;
+  recipientAddress: string;
+  amount: bigint;
+  rpcUrl?: string;
+  networkPassphrase?: string;
+}): Promise<void> {
+  const {
+    tokenContractId,
+    issuerKeypair,
+    recipientAddress,
+    amount,
+    rpcUrl = LOCAL_RPC_URL,
+    networkPassphrase = LOCAL_NETWORK_PASSPHRASE,
+  } = options;
+
+  execSync(
+    `stellar contract invoke` +
+      ` --id "${tokenContractId}"` +
+      ` --source "${issuerKeypair.secret()}"` +
+      ` --rpc-url "${rpcUrl}"` +
+      ` --network-passphrase "${networkPassphrase}"` +
+      ` -- mint` +
+      ` --to "${recipientAddress}"` +
+      ` --amount "${amount}"`,
+    { encoding: 'utf8' },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Transaction signing helper
 // ---------------------------------------------------------------------------
 
@@ -195,9 +234,9 @@ export function deployStellarAssetContract(options: {
  * that signs with the provided Keypair.
  */
 export function keypairSigner(kp: Keypair) {
-  return async (xdr: string): Promise<string> => {
+  return async (xdr: string): Promise<{ signedTxXdr: string }> => {
     const tx = TransactionBuilder.fromXDR(xdr, LOCAL_NETWORK_PASSPHRASE);
     tx.sign(kp);
-    return tx.toXDR();
+    return { signedTxXdr: tx.toXDR() };
   };
 }

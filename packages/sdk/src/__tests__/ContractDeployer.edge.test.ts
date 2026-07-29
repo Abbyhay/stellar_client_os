@@ -613,6 +613,34 @@ describe('ContractDeployer — edge cases', () => {
     });
   });
 
+  // ── Cryptographic salt generation ─────────────────────────────────────────
+  describe('randomSalt', () => {
+    it('generates distinct 32-byte salts on consecutive calls', () => {
+      const randomSalt = (deployer as unknown as { randomSalt: () => Buffer }).randomSalt.bind(
+        deployer
+      );
+      const salt1 = randomSalt();
+      const salt2 = randomSalt();
+
+      expect(salt1).toHaveLength(32);
+      expect(salt2).toHaveLength(32);
+      expect(Buffer.compare(salt1, salt2)).not.toBe(0);
+    });
+
+    it('does not derive salts from Math.random', () => {
+      const mathRandomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const randomSalt = (deployer as unknown as { randomSalt: () => Buffer }).randomSalt.bind(
+        deployer
+      );
+
+      const salt = randomSalt();
+      expect(salt).toHaveLength(32);
+      expect(mathRandomSpy).not.toHaveBeenCalled();
+
+      mathRandomSpy.mockRestore();
+    });
+  });
+
   // ── Error class hierarchy ──────────────────────────────────────────────────
   describe('error class hierarchy', () => {
     it('all deployer errors extend DeployerError', () => {

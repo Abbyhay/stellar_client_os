@@ -1,5 +1,4 @@
-"use client";
-
+import { useMemo } from "react";
 import { sliceAddress } from "@/lib/utils";
 import { format } from "date-fns";
 import { ColumnDef } from "@tanstack/react-table";
@@ -23,6 +22,14 @@ const getStatusColor = (status: string) => {
             return "bg-gray-500";
     }
 };
+
+/**
+ * Hook to return memoized table column definitions for payment streams,
+ * preventing re-creation of column objects on every render cycle.
+ */
+export function useStreamColumns(): ColumnDef<StreamRecord>[] {
+    return useMemo(() => streamColumns, []);
+}
 
 export const streamColumns: ColumnDef<StreamRecord>[] = [
     {

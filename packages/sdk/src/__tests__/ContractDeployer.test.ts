@@ -451,4 +451,25 @@ describe('ContractDeployer', () => {
       expect(passphrase).toBe('Test SDF Network ; September 2015');
     });
   });
+
+  describe('RPC URL security', () => {
+    it('rejects non-loopback http:// rpcUrl at construction', () => {
+      expect(
+        () =>
+          new ContractDeployer({
+            rpcUrl: 'http://evil.example/rpc',
+          })
+      ).toThrow(/Insecure RPC URL rejected/);
+    });
+
+    it('allows loopback http:// rpcUrl with allowHttp: true', () => {
+      expect(
+        () =>
+          new ContractDeployer({
+            rpcUrl: 'http://localhost:8000',
+            allowHttp: true,
+          })
+      ).not.toThrow();
+    });
+  });
 });

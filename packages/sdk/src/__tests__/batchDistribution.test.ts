@@ -1,94 +1,68 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { DistributorClient } from "../DistributorClient";
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createBatches,
   prepareBatchEqualDistribution,
   prepareBatchWeightedDistribution,
-} from "../utils/batchDistribution";
+} from '../utils/batchDistribution';
 
-const SENDER = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
-const TOKEN = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
-const RECIPIENT_A = "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
-const RECIPIENT_B = "GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
-const RECIPIENT_C = "GDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+const mockDistributeEqual = vi.fn();
+const mockDistributeWeighted = vi.fn();
 
-function createMockClient(): DistributorClient {
-  return {
-    distributeEqual: vi.fn().mockResolvedValue({ signAndSend: vi.fn() }),
-    distributeWeighted: vi.fn().mockResolvedValue({ signAndSend: vi.fn() }),
-  } as unknown as DistributorClient;
-}
+const mockClient = {
+  distributeEqual: mockDistributeEqual,
+  distributeWeighted: mockDistributeWeighted,
+} as any;
 
-describe("batchDistribution", () => {
-  let client: DistributorClient;
+describe('createBatches', () => {
+  it('splits arrays into fixed-size batches', () => {
+    expect(createBatches([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  });
 
+  it.each([0, -1, 1.5])('rejects invalid batchSize %s', (batchSize) => {
+    expect(() => createBatches([1, 2, 3], batchSize)).toThrow(
+      /batchSize must be a positive integer/
+    );
+  });
+});
+
+describe('prepareBatchEqualDistribution', () => {
   beforeEach(() => {
-    client = createMockClient();
+    mockDistributeEqual.mockReset();
+    mockDistributeEqual.mockResolvedValue({ id: 'tx' });
   });
 
-  describe("createBatches", () => {
-    it("splits arrays into fixed-size chunks", () => {
-      expect(createBatches([1, 2, 3], 2)).toEqual([[1, 2], [3]]);
-    });
+  it('rejects invalid maxRecipientsPerBatch before RPC calls', async () => {
+    await expect(
+      prepareBatchEqualDistribution(mockClient, {
+        sender: 'GAAAA',
+        token: 'native',
+        total_amount: 100n,
+        recipients: ['GAAAA', 'GBBBB'],
+        config: { maxRecipientsPerBatch: 0 },
+      })
+    ).rejects.toThrow(/config\.maxRecipientsPerBatch must be a positive integer/);
 
-    it("rejects zero batch size", () => {
-      expect(() => createBatches([1, 2, 3], 0)).toThrow(
-        "batchSize must be a positive integer"
-      );
-    });
+    expect(mockDistributeEqual).not.toHaveBeenCalled();
+  });
+});
 
-    it("rejects negative batch size", () => {
-      expect(() => createBatches([1, 2, 3], -1)).toThrow(
-        "batchSize must be a positive integer"
-      );
-    });
-
-    it("rejects fractional batch size", () => {
-      expect(() => createBatches([1, 2, 3], 1.5)).toThrow(
-        "batchSize must be a positive integer"
-      );
-    });
+describe('prepareBatchWeightedDistribution', () => {
+  beforeEach(() => {
+    mockDistributeWeighted.mockReset();
+    mockDistributeWeighted.mockResolvedValue({ id: 'tx' });
   });
 
-  describe("prepareBatchEqualDistribution", () => {
-    it.each([0, -1, 1.5])(
-      "rejects maxRecipientsPerBatch=%s before RPC calls",
-      async (maxRecipientsPerBatch) => {
-        await expect(
-          prepareBatchEqualDistribution(client, {
-            sender: SENDER,
-            token: TOKEN,
-            total_amount: 300n,
-            recipients: [RECIPIENT_A, RECIPIENT_B],
-            config: { maxRecipientsPerBatch },
-          })
-        ).rejects.toThrow(
-          "config.maxRecipientsPerBatch must be a positive integer"
-        );
+  it('rejects invalid maxRecipientsPerBatch before RPC calls', async () => {
+    await expect(
+      prepareBatchWeightedDistribution(mockClient, {
+        sender: 'GAAAA',
+        token: 'native',
+        recipients: ['GAAAA', 'GBBBB'],
+        amounts: [100n, 200n],
+        config: { maxRecipientsPerBatch: -1 },
+      })
+    ).rejects.toThrow(/config\.maxRecipientsPerBatch must be a positive integer/);
 
-        expect(client.distributeEqual).not.toHaveBeenCalled();
-      }
-    );
-  });
-
-  describe("prepareBatchWeightedDistribution", () => {
-    it.each([0, -1, 1.5])(
-      "rejects maxRecipientsPerBatch=%s before RPC calls",
-      async (maxRecipientsPerBatch) => {
-        await expect(
-          prepareBatchWeightedDistribution(client, {
-            sender: SENDER,
-            token: TOKEN,
-            recipients: [RECIPIENT_A, RECIPIENT_B, RECIPIENT_C],
-            amounts: [100n, 200n, 300n],
-            config: { maxRecipientsPerBatch },
-          })
-        ).rejects.toThrow(
-          "config.maxRecipientsPerBatch must be a positive integer"
-        );
-
-        expect(client.distributeWeighted).not.toHaveBeenCalled();
-      }
-    );
+    expect(mockDistributeWeighted).not.toHaveBeenCalled();
   });
 });

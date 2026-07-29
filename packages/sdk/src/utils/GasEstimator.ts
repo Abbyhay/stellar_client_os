@@ -1,5 +1,6 @@
 import { xdr } from "@stellar/stellar-sdk";
 import { Server, Api } from "@stellar/stellar-sdk/rpc";
+import { resolveRpcServerOptions } from "./rpcConnectionOptions";
 
 const DEFAULT_BASE_FEE = "100";
 const DEFAULT_RESOURCE_BUFFER = 1.2;
@@ -28,6 +29,8 @@ export interface GasEstimatorOptions {
   congestionBuffer?: number;
   /** Multiplier applied to fee recommendations under high/severe congestion. Defaults to 1.35. */
   highCongestionBuffer?: number;
+  /** Opt in to plain HTTP for local loopback RPC URLs. Defaults to false. */
+  allowHttp?: boolean;
 }
 
 export type CongestionLevel =
@@ -73,17 +76,6 @@ export interface GasEstimate {
   feeStats?: unknown;
 }
 
-/**
- * Estimates Soroban transaction fees and resource limits from simulation data
- * plus current RPC fee statistics when available.
- */
-export class GasEstimator {
-  private readonly rpc: GasEstimatorRpc;
-  private readonly baseFee: string;
-  private readonly resourceBuffer: number;
-  private readonly congestionBuffer: number;
-  private readonly highCongestionBuffer: number;
-
 function assertStroopString(value: string, name: string): string {
   if (!/^\d+$/.test(value)) {
     throw new Error(`${name} must be a non-negative integer string in stroops`);
@@ -98,12 +90,26 @@ function assertFinitePositiveNumber(value: number, name: string): number {
   return value;
 }
 
+/**
+ * Estimates Soroban transaction fees and resource limits from simulation data
+ * plus current RPC fee statistics when available.
+ */
+export class GasEstimator {
+  private readonly rpc: GasEstimatorRpc;
+  private readonly baseFee: string;
+  private readonly resourceBuffer: number;
+  private readonly congestionBuffer: number;
+  private readonly highCongestionBuffer: number;
+
   constructor(options: GasEstimatorOptions) {
     if (!options.rpc && !options.rpcUrl) {
       throw new Error("GasEstimator requires either rpc or rpcUrl");
     }
 
-    this.rpc = options.rpc ?? new Server(options.rpcUrl!, { allowHttp: true });
+    this.rpc = options.rpc ?? new Server(
+      options.rpcUrl!,
+      resolveRpcServerOptions(options.rpcUrl!, { allowHttp: options.allowHttp })
+    );
     this.baseFee = assertStroopString(
       options.baseFee ?? DEFAULT_BASE_FEE,
       "baseFee"
