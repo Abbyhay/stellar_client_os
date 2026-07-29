@@ -82,6 +82,18 @@ export class ContractDeployer {
     this.timeoutSeconds = config.timeoutSeconds ?? DEFAULT_TIMEOUT;
   }
 
+  private getAllowHttp(rpcUrl: string, allowHttp?: boolean): boolean {
+    try {
+      return shouldAllowLocalHttp(rpcUrl, allowHttp);
+    } catch (error) {
+      throw new DeployerError(
+        (error as Error).message,
+        'UNSAFE_HTTP_RPC_URL',
+        error as Error
+      );
+    }
+  }
+
   // ─── Async factory ─────────────────────────────────────────────────────────
 
   /**
