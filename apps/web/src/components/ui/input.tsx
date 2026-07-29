@@ -11,7 +11,13 @@ function Input({
   ...props
 }: React.ComponentProps<"input">) {
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (type === "number" && INVALID_NUMBER_KEYS.has(event.key)) {
+    const hasCommandModifier = event.ctrlKey || event.metaKey
+
+    if (
+      type === "number" &&
+      !hasCommandModifier &&
+      INVALID_NUMBER_KEYS.has(event.key)
+    ) {
       event.preventDefault()
     }
 

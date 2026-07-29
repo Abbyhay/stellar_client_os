@@ -22,6 +22,19 @@ describe("Input", () => {
     }
   )
 
+  it.each([
+    { key: "+", ctrlKey: true },
+    { key: "-", ctrlKey: true },
+    { key: "+", metaKey: true },
+    { key: "-", metaKey: true },
+  ])("allows $key with command modifiers", (keyboardEvent) => {
+    const { getByRole } = render(<Input type="number" />)
+
+    expect(
+      fireEvent.keyDown(getByRole("spinbutton"), keyboardEvent)
+    ).toBe(true)
+  })
+
   it("preserves a caller-supplied keydown handler", () => {
     let defaultPrevented = false
     const onKeyDown = vi.fn((event: React.KeyboardEvent<HTMLInputElement>) => {
