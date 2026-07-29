@@ -16,6 +16,7 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
+    DropdownMenuPortal,
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -125,6 +126,7 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
                         <MoreHorizontal className="h-4 w-4 text-white" aria-hidden="true" />
                     </Button>
                 </DropdownMenuTrigger>
+                <DropdownMenuPortal>
                 <DropdownMenuContent align="end">
                     {isRecipient && isActive && (
                         <DropdownMenuItem
@@ -203,6 +205,7 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
                         Copy Stream ID
                     </DropdownMenuItem>
                 </DropdownMenuContent>
+                </DropdownMenuPortal>
             </DropdownMenu>
 
             <WithdrawStreamModal
