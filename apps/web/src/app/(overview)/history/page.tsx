@@ -1,5 +1,5 @@
 "use client";
- 
+
 import React, { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
@@ -13,6 +13,7 @@ import AppSelect from "@/components/molecules/AppSelect";
 import { createTestnetService } from "@/services";
 import { DISTRIBUTOR_CONTRACT_ID, PAYMENT_STREAM_CONTRACT_ID } from "@/lib/constants";
 import { withAbortSignal } from "@/utils/retry";
+import { useDebouncedCallback } from "@/hooks/use-debounce-callback";
 
 const HistoryPage = () => {
     const { address } = useWallet();
@@ -31,7 +32,15 @@ const HistoryPage = () => {
     const [startDate, setStartDate] = useState(searchParams.get("from") || '');
     const [endDate, setEndDate] = useState(searchParams.get("to") || '');
 
-    // Sync state with URL
+    const syncUrlParams = useDebouncedCallback(
+        (p: URLSearchParams) => {
+            const query = p.toString();
+            router.replace(`${pathname}${query ? `?${query}` : ""}`, { scroll: false });
+        },
+        300
+    );
+
+    // Sync state with URL (debounced 300ms to prevent excessive calls on date input)
     useEffect(() => {
         const params = new URLSearchParams();
         if (page > 1) params.set("page", page.toString());
@@ -42,9 +51,8 @@ const HistoryPage = () => {
         if (startDate) params.set("from", startDate);
         if (endDate) params.set("to", endDate);
 
-        const query = params.toString();
-        router.replace(`${pathname}${query ? `?${query}` : ""}`, { scroll: false });
-    }, [page, limit, typeFilter, tokenFilter, statusFilter, startDate, endDate, router, pathname]);
+        syncUrlParams(params);
+    }, [page, limit, typeFilter, tokenFilter, statusFilter, startDate, endDate, syncUrlParams]);
 
     const service = useMemo(() => createTestnetService({
         paymentStream: PAYMENT_STREAM_CONTRACT_ID,

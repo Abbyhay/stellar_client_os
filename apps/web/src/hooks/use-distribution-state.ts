@@ -3,6 +3,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react';
+import { useDebouncedCallback } from './use-debounce-callback';
 import type { 
   DistributionState, 
   DistributionType, 
@@ -11,6 +12,7 @@ import type {
 } from '@/types/distribution';
 import { isValidStellarAddress, validateStellarAddress, findDuplicateAddresses } from '@/utils/stellar-validation';
 import { validateAmount, calculateEqualAmount, calculateTotalAmount } from '@/utils/amount-validation';
+import { notify } from '@/utils/notification';
 
 /**
  * Initial state for distribution
@@ -76,6 +78,9 @@ export function useDistributionState() {
         sessionStorage.setItem('distribution-state', JSON.stringify(state));
       } catch (error) {
         console.warn('Failed to persist distribution state to session storage:', error);
+        if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+          notify.error("Storage quota exceeded. Your progress will not be saved. Please clear some space.");
+        }
       }
     }
   }, [state]);
@@ -118,9 +123,18 @@ export function useDistributionState() {
       }
     });
 
-    // Check for duplicate addresses
+    // Check for duplicate addresses and flag recipient objects with warning badge
     const addresses = currentState.recipients.map(r => r.address).filter(addr => addr.trim() !== '');
     const duplicates = findDuplicateAddresses(addresses);
+    const duplicateSet = new Set(duplicates);
+
+    currentState.recipients.forEach((recipient) => {
+      const trimmed = recipient.address.trim();
+      const isDup = trimmed !== '' && duplicateSet.has(trimmed);
+      recipient.isDuplicate = isDup;
+      recipient.warning = isDup ? 'Duplicate recipient public key' : undefined;
+    });
+
     if (duplicates.length > 0) {
       errors.push({
         field: 'recipients',
@@ -128,7 +142,7 @@ export function useDistributionState() {
       });
     }
 
-    // For equal distribution, validate total amount
+    // For equal distribution, validate total amount and guard against division by zero
     if (currentState.type === 'equal') {
       if (!currentState.totalAmount || currentState.totalAmount.trim() === '') {
         errors.push({
@@ -142,12 +156,26 @@ export function useDistributionState() {
             field: 'totalAmount',
             message: totalAmountError,
           });
+        } else if (currentState.recipients.length > 0) {
+          // Perform division calculation safely with recipients.length > 0 guard
+          const perRecipientAmount = calculateEqualAmount(currentState.totalAmount, currentState.recipients.length);
+          if (perRecipientAmount === '0' && Number(currentState.totalAmount) > 0) {
+            errors.push({
+              field: 'totalAmount',
+              message: 'Total amount is too small to distribute among recipients',
+            });
+          }
         }
       }
     }
 
     return errors;
   }, []);
+
+  const debouncedValidate = useDebouncedCallback((currentState: DistributionState) => {
+    const errors = validateState(currentState);
+    setState(prev => ({ ...prev, errors, isValid: errors.length === 0 }));
+  }, 150);
 
   /**
    * Update distribution type
@@ -223,14 +251,10 @@ export function useDistributionState() {
         }),
       };
 
-      const errors = validateState(newState);
-      return {
-        ...newState,
-        errors,
-        isValid: errors.length === 0,
-      };
+      debouncedValidate(newState);
+      return newState;
     });
-  }, [validateState]);
+  }, [debouncedValidate]);
 
   /**
    * Remove a recipient

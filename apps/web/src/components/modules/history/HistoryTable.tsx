@@ -18,6 +18,7 @@ import {
     TableHead,
     TableHeader,
 } from "@/components/ui/table";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 import { HistoryRecord } from "@/services/types";
 import AppSelect from "@/components/molecules/AppSelect";
@@ -29,6 +30,9 @@ import ActionsCell from "./ActionsCell";
 import { format } from "date-fns";
 
 import { ColumnDef } from "@tanstack/react-table";
+
+const isValidStellarTransactionHash = (hash: string): boolean =>
+    /^[0-9a-fA-F]{64}$/.test(hash);
 
 interface HistoryTableProps {
     data: HistoryRecord[];
@@ -221,16 +225,32 @@ const HistoryTable = ({
                                                             </button>
                                                         )}
                                                         {rec.transactionHash && (
-                                                            <a
-                                                                href={`https://stellar.expert/explorer/testnet/tx/${encodeURIComponent(rec.transactionHash)}`}
-                                                                target="_blank"
-                                                                rel="noreferrer"
-                                                                onClick={(e) => e.stopPropagation()}
-                                                                className="p-1 rounded hover:bg-zinc-800"
-                                                                aria-label="View on explorer"
-                                                            >
-                                                                <ExternalLink className="h-4 w-4" />
-                                                            </a>
+                                                            isValidStellarTransactionHash(rec.transactionHash) ? (
+                                                                <a
+                                                                    href={`https://stellar.expert/explorer/testnet/tx/${rec.transactionHash}`}
+                                                                    target="_blank"
+                                                                    rel="noreferrer"
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    className="p-1 rounded hover:bg-zinc-800"
+                                                                    aria-label="View on explorer"
+                                                                >
+                                                                    <ExternalLink className="h-4 w-4" />
+                                                                </a>
+                                                            ) : (
+                                                                <Tooltip>
+                                                                    <TooltipTrigger asChild>
+                                                                        <span
+                                                                            className="p-1 rounded text-zinc-500 cursor-not-allowed"
+                                                                            aria-label="Invalid transaction hash"
+                                                                        >
+                                                                            <ExternalLink className="h-4 w-4" />
+                                                                        </span>
+                                                                    </TooltipTrigger>
+                                                                    <TooltipContent>
+                                                                        Invalid transaction hash
+                                                                    </TooltipContent>
+                                                                </Tooltip>
+                                                            )
                                                         )}
                                                     </div>
                                                 </div>

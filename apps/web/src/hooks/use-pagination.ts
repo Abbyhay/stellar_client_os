@@ -65,5 +65,8 @@ export const getPaginationRange = ({
   return items;
 };
 
-export const usePagination = (params: UsePaginationParams) =>
-  useMemo(() => getPaginationRange(params), [params]);
+export const usePagination = ({ currentPage, pageCount, siblingCount = 2 }: UsePaginationParams) =>
+  useMemo(
+    () => getPaginationRange({ currentPage, pageCount, siblingCount }),
+    [currentPage, pageCount, siblingCount]
+  );

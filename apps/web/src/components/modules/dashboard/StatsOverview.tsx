@@ -1,6 +1,7 @@
 "use client";
 
 import { useWallet } from "@/providers/StellarWalletProvider";
+import { ConnectWalletPrompt } from "@/components/layouts/ProtectedRoute";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { createTestnetService } from "@/services";
@@ -33,7 +34,13 @@ const StatsOverview = () => {
         { label: "Pending Claims", value: "0", isLoading: false }, // Placeholder for now
     ];
 
-    if (!address) return null;
+    if (!address) return (
+        <ConnectWalletPrompt
+            title="Connect your wallet"
+            description="Please connect your Stellar wallet to view your dashboard stats."
+            containerClassName="min-h-[400px]"
+        />
+    );
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-8 mb-8">
