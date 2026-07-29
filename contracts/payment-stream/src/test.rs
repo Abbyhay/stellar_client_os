@@ -1829,5 +1829,363 @@ fn test_withdraw_after_pause_and_resume() {
     assert!(recipient_balance > 0);
     assert_eq!(recipient_balance, 600); // 100 + 500
 }
-    
+
+// --- Cross-asset swap deposit tests ---
+
+use soroban_sdk::{contract, contractimpl};
+
+/// A minimal mock swap provider used to exercise `deposit_with_swap` in
+/// tests. It receives `from_token` (already transferred to it by the
+/// caller before `swap` is invoked) and delivers `to_token` to `to` at a
+/// fixed configurable rate expressed in basis points (10000 = 1:1).
+#[contract]
+pub struct MockSwapProvider;
+
+#[contractimpl]
+impl MockSwapProvider {
+    pub fn swap(
+        env: Env,
+        _from_token: Address,
+        to_token: Address,
+        amount_in: i128,
+        min_amount_out: i128,
+        to: Address,
+    ) -> i128 {
+        let rate_bps: i128 = env.storage().instance().get(&soroban_sdk::Symbol::new(&env, "rate_bps")).unwrap_or(10000);
+        let amount_out = (amount_in * rate_bps) / 10000;
+
+        if amount_out < min_amount_out {
+            panic!("slippage exceeded");
+        }
+
+        let to_token_client = token::Client::new(&env, &to_token);
+        to_token_client.transfer(&env.current_contract_address(), &to, &amount_out);
+
+        amount_out
+    }
+
+    pub fn set_rate_bps(env: Env, rate_bps: i128) {
+        env.storage().instance().set(&soroban_sdk::Symbol::new(&env, "rate_bps"), &rate_bps);
+    }
+}
+
+fn setup_swap_test(env: &Env) -> (Address, Address, Address, Address, Address, Address) {
+    let admin = Address::generate(env);
+    let fee_collector = Address::generate(env);
+    let sender = Address::generate(env);
+    let recipient = Address::generate(env);
+
+    let dest_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let dest_token = dest_sac.address();
+
+    let source_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let source_token = source_sac.address();
+
+    (admin, fee_collector, sender, recipient, dest_token, source_token)
+}
+
+#[test]
+fn test_deposit_with_swap_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    let swap_provider_client = MockSwapProviderClient::new(&env, &swap_provider_id);
+    client.set_swap_provider(&swap_provider_id);
+
+    // Fund the mock swap provider with destination tokens so it can pay out swaps
+    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
+    dest_admin.mint(&swap_provider_id, &10_000);
+
+    // Fund sender with the source asset (e.g. XLM) to swap into the stream token (e.g. USDC)
+    let source_admin = token::StellarAssetClient::new(&env, &source_token);
+    source_admin.mint(&sender, &1_000);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &1000,
+        &0,
+        &0,
+        &100,
+    );
+
+    let amount_out = client.deposit_with_swap(&stream_id, &source_token, &500, &400);
+    assert_eq!(amount_out, 500); // 1:1 default rate
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 500);
+
+    let source_token_client = token::Client::new(&env, &source_token);
+    assert_eq!(source_token_client.balance(&sender), 500);
+    assert_eq!(source_token_client.balance(&swap_provider_id), 500);
+
+    let dest_token_client = token::Client::new(&env, &dest_token);
+    assert_eq!(dest_token_client.balance(&contract_id), 500);
+
+    // silence unused variable warning for the typed client (kept for clarity/future use)
+    let _ = swap_provider_client;
+}
+
+#[test]
+fn test_deposit_with_swap_respects_actual_amount_received() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    let swap_provider_client = MockSwapProviderClient::new(&env, &swap_provider_id);
+    swap_provider_client.set_rate_bps(&20000); // 2x rate
+
+    client.set_swap_provider(&swap_provider_id);
+
+    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
+    dest_admin.mint(&swap_provider_id, &10_000);
+
+    let source_admin = token::StellarAssetClient::new(&env, &source_token);
+    source_admin.mint(&sender, &1_000);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &2000,
+        &0,
+        &0,
+        &100,
+    );
+
+    let amount_out = client.deposit_with_swap(&stream_id, &source_token, &500, &400);
+    assert_eq!(amount_out, 1000); // 500 * 2x rate
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 1000);
+
+    let _ = contract_id;
+}
+
+#[test]
+fn test_deposit_with_swap_provider_not_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let source_admin = token::StellarAssetClient::new(&env, &source_token);
+    source_admin.mint(&sender, &1_000);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &1000,
+        &0,
+        &0,
+        &100,
+    );
+
+    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &400);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deposit_with_swap_same_asset_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, _source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    client.set_swap_provider(&swap_provider_id);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &1000,
+        &0,
+        &0,
+        &100,
+    );
+
+    // Attempting to "swap" the stream's own token into itself should be rejected
+    let result = client.try_deposit_with_swap(&stream_id, &dest_token, &500, &400);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deposit_with_swap_slippage_exceeded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    client.set_swap_provider(&swap_provider_id);
+
+    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
+    dest_admin.mint(&swap_provider_id, &10_000);
+
+    let source_admin = token::StellarAssetClient::new(&env, &source_token);
+    source_admin.mint(&sender, &1_000);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &1000,
+        &0,
+        &0,
+        &100,
+    );
+
+    // Request more out than the fixed 1:1 rate can provide
+    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &600);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deposit_with_swap_exceeds_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    client.set_swap_provider(&swap_provider_id);
+
+    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
+    dest_admin.mint(&swap_provider_id, &10_000);
+
+    let source_admin = token::StellarAssetClient::new(&env, &source_token);
+    source_admin.mint(&sender, &1_000);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &300,
+        &0,
+        &0,
+        &100,
+    );
+
+    // Swapping in 500 (1:1) would push the balance above total_amount (300)
+    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &400);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deposit_with_swap_inactive_stream_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    client.set_swap_provider(&swap_provider_id);
+
+    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
+    dest_admin.mint(&swap_provider_id, &10_000);
+
+    let source_admin = token::StellarAssetClient::new(&env, &source_token);
+    source_admin.mint(&sender, &1_000);
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &dest_token,
+        &1000,
+        &0,
+        &0,
+        &100,
+    );
+
+    client.cancel_stream(&stream_id);
+
+    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &400);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_swap_provider_unauthorized() {
+    let env = Env::default();
+
+    let (admin, fee_collector, _sender, _recipient, _dest_token, _source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (&admin, &fee_collector, &0u32).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.initialize(&admin, &fee_collector, &0);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    let not_admin = Address::generate(&env);
+
+    // No auth mocked for `not_admin`, so this must fail admin authorization
+    env.mock_auths(&[]);
+    let result = client.try_set_swap_provider(&swap_provider_id);
+    let _ = not_admin;
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_swap_provider_roundtrip() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, fee_collector, _sender, _recipient, _dest_token, _source_token) = setup_swap_test(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    assert_eq!(client.get_swap_provider(), None);
+
+    let swap_provider_id = env.register(MockSwapProvider, ());
+    client.set_swap_provider(&swap_provider_id);
+
+    assert_eq!(client.get_swap_provider(), Some(swap_provider_id));
+}
+
 }

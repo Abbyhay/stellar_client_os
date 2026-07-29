@@ -1,5 +1,25 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env, Symbol};
+use soroban_sdk::{contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env, Symbol};
+
+/// Interface implemented by external swap providers (e.g. a Stellar DEX/AMM
+/// router such as Soroswap) that this contract invokes to perform atomic
+/// cross-asset conversions on stream deposits.
+///
+/// A conforming provider must, within the `swap` invocation, deliver at
+/// least `min_amount_out` of `to_token` to the `to` address and return the
+/// actual amount delivered. `amount_in` of `from_token` is transferred to
+/// the provider before this call is made.
+#[contractclient(name = "SwapProviderClient")]
+pub trait SwapProvider {
+    fn swap(
+        env: Env,
+        from_token: Address,
+        to_token: Address,
+        amount_in: i128,
+        min_amount_out: i128,
+        to: Address,
+    ) -> i128;
+}
 
 /// Stream status enum
 #[contracttype]
@@ -68,6 +88,16 @@ pub struct StreamDepositEvent {
     pub amount: i128,
 }
 
+/// Stream swap-deposit event data
+#[contracttype]
+#[derive(Clone)]
+pub struct StreamDepositSwapEvent {
+    pub stream_id: u64,
+    pub source_token: Address,
+    pub amount_in: i128,
+    pub amount_out: i128,
+}
+
 /// Delegation granted event data
 #[contracttype]
 #[derive(Clone)]
@@ -123,6 +153,9 @@ pub enum Error {
     DepositExceedsTotal = 14,
     ArithmeticOverflow = 15,
     InvalidDelegate = 16,
+    SwapProviderNotSet = 17,
+    InvalidSwapPath = 18,
+    SlippageExceeded = 19,
 }
 
 // Constants
@@ -295,6 +328,118 @@ impl PaymentStreamContract {
 
         // Emit StreamDeposit event
         env.events().publish(("StreamDeposit", stream_id), StreamDepositEvent { stream_id, amount });
+    }
+
+    /// Deposit into an existing stream by atomically converting a different
+    /// source asset into the stream's token via the configured swap
+    /// provider (a Stellar DEX/AMM router contract), e.g. XLM -> USDC.
+    ///
+    /// `amount_in` of `source_token` is escrowed from the sender to the
+    /// swap provider, which must deliver at least `min_amount_out` of the
+    /// stream's token to this contract. The actual amount received (which
+    /// may exceed `min_amount_out`) is credited to the stream balance.
+    /// Returns the amount of the stream's token actually credited.
+    pub fn deposit_with_swap(
+        env: Env,
+        stream_id: u64,
+        source_token: Address,
+        amount_in: i128,
+        min_amount_out: i128,
+    ) -> i128 {
+        let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
+
+        if matches!(stream.status, StreamStatus::Canceled | StreamStatus::Completed) {
+            panic_with_error!(&env, Error::StreamNotActive);
+        }
+
+        stream.sender.require_auth();
+
+        if amount_in <= 0 || min_amount_out <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        if source_token == stream.token {
+            panic_with_error!(&env, Error::InvalidSwapPath);
+        }
+
+        let swap_provider: Address = match env.storage().instance().get(&Symbol::new(&env, "swap_provider")) {
+            Some(provider) => provider,
+            None => panic_with_error!(&env, Error::SwapProviderNotSet),
+        };
+
+        // Escrow the source asset from the sender directly to the swap
+        // provider, which will perform the conversion.
+        let source_client = token::Client::new(&env, &source_token);
+        source_client.transfer(&stream.sender, &swap_provider, &amount_in);
+
+        let dest_client = token::Client::new(&env, &stream.token);
+        let contract_address = env.current_contract_address();
+        let balance_before = dest_client.balance(&contract_address);
+
+        let swap_client = SwapProviderClient::new(&env, &swap_provider);
+        swap_client.swap(
+            &source_token,
+            &stream.token,
+            &amount_in,
+            &min_amount_out,
+            &contract_address,
+        );
+
+        let balance_after = dest_client.balance(&contract_address);
+        let amount_out = balance_after.checked_sub(balance_before)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+
+        if amount_out < min_amount_out {
+            panic_with_error!(&env, Error::SlippageExceeded);
+        }
+
+        let new_balance = stream.balance.checked_add(amount_out)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+
+        if new_balance > stream.total_amount {
+            panic_with_error!(&env, Error::DepositExceedsTotal);
+        }
+
+        stream.balance = new_balance;
+        env.storage().persistent().set(&stream_id, &stream);
+        env.storage().persistent().extend_ttl(&stream_id, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        // Update stream metrics
+        let mut metrics: StreamMetrics = env.storage().persistent()
+            .get(&(stream_id, Symbol::new(&env, "metrics")))
+            .unwrap_or_else(|| Self::default_stream_metrics(&env));
+
+        metrics.last_activity = env.ledger().timestamp();
+
+        env.storage().persistent().set(&(stream_id, Symbol::new(&env, "metrics")), &metrics);
+        env.storage().persistent().extend_ttl(&(stream_id, Symbol::new(&env, "metrics")), LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        // Emit StreamDepositSwap event
+        env.events().publish(
+            ("StreamDepositSwap", stream_id),
+            StreamDepositSwapEvent {
+                stream_id,
+                source_token,
+                amount_in,
+                amount_out,
+            },
+        );
+
+        amount_out
+    }
+
+    /// Set the swap provider contract used for cross-asset stream deposits (admin only)
+    pub fn set_swap_provider(env: Env, swap_provider: Address) {
+        let admin: Address = env.storage().instance().get(&Symbol::new(&env, "admin")).unwrap();
+        admin.require_auth();
+
+        env.storage().instance().set(&Symbol::new(&env, "swap_provider"), &swap_provider);
+        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    /// Get the configured swap provider, if any
+    pub fn get_swap_provider(env: Env) -> Option<Address> {
+        env.storage().instance().get(&Symbol::new(&env, "swap_provider"))
     }
 
     /// Get stream details
