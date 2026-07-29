@@ -287,11 +287,22 @@ export const StellarWalletProvider = ({
   const signTransaction = useCallback(
     async (xdr: string) => {
       if (!kit || !address) throw new Error("Wallet not connected");
+
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error("Sign transaction timed out after 60 seconds. Please unlock your wallet and try again."));
+        }, 60000);
+      });
+
       try {
-        const { signedTxXdr } = await kit.signTransaction(xdr);
+        const { signedTxXdr } = await Promise.race([
+          kit.signTransaction(xdr),
+          timeoutPromise,
+        ]);
         return signedTxXdr;
-      } catch (error) {
-        throw error;
+      } finally {
+        clearTimeout(timeoutId!);
       }
     },
     [kit, address],
