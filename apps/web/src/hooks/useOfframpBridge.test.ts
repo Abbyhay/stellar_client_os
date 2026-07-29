@@ -21,16 +21,6 @@ vi.mock("@/services/offramp.service", () => ({
     },
 }));
 
-vi.mock("@/services/allbridge.service", () => ({
-    allbridgeService: {
-        getBridgeQuote: vi.fn(),
-        buildBridgeTransaction: vi.fn(),
-        handleBumpIfNeeded: vi.fn(),
-        submitTransaction: vi.fn(),
-        getTransferStatus: vi.fn(),
-    },
-}));
-
 vi.mock("@/services/offramp.mock", () => ({
     isOfframpMockEnabled: false,
     getMockDelay: vi.fn(() => 0),
@@ -46,7 +36,6 @@ vi.mock("@/lib/api", () => ({
 
 import { useWallet } from "@/providers/StellarWalletProvider";
 import { offrampService } from "@/services/offramp.service";
-import { allbridgeService } from "@/services/allbridge.service";
 
 const mockSignTransaction = vi.fn().mockResolvedValue("signed-xdr");
 
@@ -81,13 +70,6 @@ const mockOfframpData = {
     currency: "NGN",
     status: "pending",
     expiresAt: new Date(Date.now() + 600000).toISOString(),
-};
-
-const mockBridgeQuote = {
-    sendAmount: "10.15",
-    receiveAmount: "10",
-    bridgeFee: "0.15",
-    estimatedTimeMinutes: 6,
 };
 
 function createWrapper() {
@@ -133,8 +115,6 @@ describe("useOfframpBridge", () => {
         expect(result.current.error).toBeNull();
         expect(result.current.isLoading).toBe(false);
         expect(result.current.quote).toBeNull();
-        expect(result.current.bridgeQuote).toBeNull();
-        expect(result.current.feeBreakdown).toBeNull();
         expect(result.current.offrampData).toBeNull();
         expect(result.current.bridgeTxHash).toBeNull();
         expect(result.current.payoutStatus).toBeNull();
@@ -227,7 +207,6 @@ describe("useOfframpBridge", () => {
             success: true,
             data: mockOfframpData,
         });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
 
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
 
@@ -238,8 +217,6 @@ describe("useOfframpBridge", () => {
         await act(async () => { await result.current.getQuote({ ...result.current.formState }); });
 
         expect(result.current.step).toBe("quote");
-        expect(result.current.bridgeQuote).toEqual(mockBridgeQuote);
-        expect(result.current.feeBreakdown).not.toBeNull();
         expect(result.current.offrampData).toEqual(mockOfframpData);
         expect(result.current.isLoading).toBe(false);
     });
@@ -291,53 +268,15 @@ describe("useOfframpBridge", () => {
         expect(result.current.step).toBe("quote");
     }
 
-    it("confirmAndBridge transitions through signing → bridging", async () => {
+    it("confirmAndBridge transitions to processing", async () => {
         (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
-        (allbridgeService.buildBridgeTransaction as ReturnType<typeof vi.fn>).mockResolvedValue("raw-xdr");
-        (allbridgeService.handleBumpIfNeeded as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-        (allbridgeService.submitTransaction as ReturnType<typeof vi.fn>).mockResolvedValue("tx-hash-abc");
-        (offrampService.updateQuoteTxHash as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true });
 
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
         await setupToQuoteStep(result);
 
         await act(async () => { await result.current.confirmAndBridge(); });
 
-        expect(result.current.step).toBe("bridging");
-        expect(result.current.bridgeTxHash).toBe("tx-hash-abc");
-    });
-
-    it("confirmAndBridge sets step to 'quote' when user cancels signing", async () => {
-        (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
-        (allbridgeService.buildBridgeTransaction as ReturnType<typeof vi.fn>).mockResolvedValue("raw-xdr");
-        (allbridgeService.handleBumpIfNeeded as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-        mockSignTransaction.mockRejectedValueOnce(new Error("User declined"));
-
-        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
-        await setupToQuoteStep(result);
-
-        await act(async () => { await result.current.confirmAndBridge(); });
-
-        expect(result.current.step).toBe("quote");
-        expect(result.current.error).toBe("Transaction cancelled");
-    });
-
-    it("confirmAndBridge sets step to 'failed' on bridge error", async () => {
-        (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
-        (allbridgeService.buildBridgeTransaction as ReturnType<typeof vi.fn>).mockRejectedValue(
-            new Error("Bridge network error")
-        );
-
-        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
-        await setupToQuoteStep(result);
-
-        await act(async () => { await result.current.confirmAndBridge(); });
-
-        expect(result.current.step).toBe("failed");
-        expect(result.current.error).toBe("Bridge network error");
+        expect(result.current.step).toBe("processing");
     });
 
     it("confirmAndBridge sets error when missing required data", async () => {
@@ -352,12 +291,6 @@ describe("useOfframpBridge", () => {
 
     it("payout polling transitions to 'completed'", async () => {
         (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
-        (allbridgeService.buildBridgeTransaction as ReturnType<typeof vi.fn>).mockResolvedValue("raw-xdr");
-        (allbridgeService.handleBumpIfNeeded as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-        (allbridgeService.submitTransaction as ReturnType<typeof vi.fn>).mockResolvedValue("tx-hash-abc");
-        (offrampService.updateQuoteTxHash as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true });
-        (allbridgeService.getTransferStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "completed" });
         (offrampService.getQuoteStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
             success: true,
             data: { status: "completed", providerMessage: "Done" },
@@ -366,11 +299,6 @@ describe("useOfframpBridge", () => {
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
         await setupToQuoteStep(result);
         await act(async () => { await result.current.confirmAndBridge(); });
-        expect(result.current.step).toBe("bridging");
-
-        // Fire bridge poll interval (15s) → processing
-        await act(async () => { vi.advanceTimersByTime(15000); });
-        await act(async () => { await Promise.resolve(); });
         expect(result.current.step).toBe("processing");
 
         // Fire payout poll interval (10s) → completed
@@ -381,12 +309,6 @@ describe("useOfframpBridge", () => {
 
     it("payout polling transitions to 'failed'", async () => {
         (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
-        (allbridgeService.buildBridgeTransaction as ReturnType<typeof vi.fn>).mockResolvedValue("raw-xdr");
-        (allbridgeService.handleBumpIfNeeded as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-        (allbridgeService.submitTransaction as ReturnType<typeof vi.fn>).mockResolvedValue("tx-hash-abc");
-        (offrampService.updateQuoteTxHash as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true });
-        (allbridgeService.getTransferStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "completed" });
         (offrampService.getQuoteStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
             success: true,
             data: { status: "failed", providerMessage: "Payout rejected" },
@@ -395,10 +317,6 @@ describe("useOfframpBridge", () => {
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
         await setupToQuoteStep(result);
         await act(async () => { await result.current.confirmAndBridge(); });
-
-        await act(async () => { vi.advanceTimersByTime(15000); });
-        await act(async () => { await Promise.resolve(); });
-        expect(result.current.step).toBe("processing");
 
         await act(async () => { vi.advanceTimersByTime(10000); });
         await act(async () => { await Promise.resolve(); });
@@ -410,7 +328,6 @@ describe("useOfframpBridge", () => {
 
     it("goBack from 'quote' returns to 'form' and clears quote data", async () => {
         (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
 
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
         await setupToQuoteStep(result);
@@ -418,8 +335,6 @@ describe("useOfframpBridge", () => {
         act(() => { result.current.goBack(); });
 
         expect(result.current.step).toBe("form");
-        expect(result.current.bridgeQuote).toBeNull();
-        expect(result.current.feeBreakdown).toBeNull();
         expect(result.current.offrampData).toBeNull();
         expect(result.current.error).toBeNull();
     });
@@ -428,7 +343,6 @@ describe("useOfframpBridge", () => {
 
     it("reset returns hook to initial state", async () => {
         (offrampService.createOfframp as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: mockOfframpData });
-        (allbridgeService.getBridgeQuote as ReturnType<typeof vi.fn>).mockResolvedValue(mockBridgeQuote);
 
         const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
         await setupToQuoteStep(result);
@@ -442,8 +356,6 @@ describe("useOfframpBridge", () => {
         expect(result.current.formState.bankCode).toBe("");
         expect(result.current.formState.accountNumber).toBe("");
         expect(result.current.formState.accountName).toBe("");
-        expect(result.current.bridgeQuote).toBeNull();
-        expect(result.current.feeBreakdown).toBeNull();
         expect(result.current.offrampData).toBeNull();
         expect(result.current.payoutStatus).toBeNull();
     });
