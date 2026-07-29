@@ -27,8 +27,12 @@ const streamInput = {
 };
 
 function createWrapper(queryClient: QueryClient) {
-  return ({ children }: { children: ReactNode }) =>
-    createElement(QueryClientProvider, { client: queryClient }, children);
+  function QueryClientWrapper({ children }: { children: ReactNode }) {
+    return createElement(QueryClientProvider, { client: queryClient }, children);
+  }
+
+  return QueryClientWrapper;
+}
 }
 
 describe('useCreateStream', () => {
