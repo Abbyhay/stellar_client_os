@@ -46,13 +46,13 @@ export async function processCSVFile(
   // Flush the decoder
   result += decoder.decode();
 
-  return processCSVText(result, distributionType);
+  return await processCSVText(result, distributionType);
 }
 
 /**
- * Process CSV text content
+ * Process CSV text content asynchronously with chunked processing
  */
-export function processCSVText(
+export async function processCSVText(
   text: string,
   distributionType: DistributionType
 ): CSVProcessingResult {
@@ -82,22 +82,35 @@ export function processCSVText(
     });
   }
 
-  // Process each line
-  for (let i = startLine; i < Math.min(lines.length, startLine + MAX_RECIPIENTS); i++) {
-    const line = lines[i];
-    const lineNumber = i + 1;
+  // Process lines in chunks to avoid blocking UI thread
+  const CHUNK_SIZE = 50; // Process 50 rows at a time
+  const totalLines = Math.min(lines.length, startLine + MAX_RECIPIENTS);
 
-    try {
-      const recipient = parseLine(line, distributionType, lineNumber);
-      if (recipient) {
-        recipients.push(recipient);
+  for (let i = startLine; i < totalLines; i += CHUNK_SIZE) {
+    const chunkEnd = Math.min(i + CHUNK_SIZE, totalLines);
+    
+    // Process chunk
+    for (let j = i; j < chunkEnd; j++) {
+      const line = lines[j];
+      const lineNumber = j + 1;
+
+      try {
+        const recipient = parseLine(line, distributionType, lineNumber);
+        if (recipient) {
+          recipients.push(recipient);
+        }
+      } catch (error) {
+        errors.push({
+          line: lineNumber,
+          message: error instanceof Error ? error.message : 'Unknown error',
+          value: line,
+        });
       }
-    } catch (error) {
-      errors.push({
-        line: lineNumber,
-        message: error instanceof Error ? error.message : 'Unknown error',
-        value: line,
-      });
+    }
+
+    // Yield to UI thread after each chunk
+    if (chunkEnd < totalLines) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 
