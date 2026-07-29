@@ -9,6 +9,7 @@ import type {
     CreateOfframpRequest,
     CreateOfframpResponse,
     QuoteStatusResponse,
+    UserLimitsResponse,
 } from "@/types/offramp";
 import { withRetry, RetryableError, isAbortError } from "@/utils/retry";
 import {
@@ -94,6 +95,7 @@ const realOfframpService = {
             if (!res.ok) {
                 return {
                     success: false,
+                    status: res.status,
                     error: data.message || data.error || "Failed to get rates",
                 };
             }
@@ -278,6 +280,37 @@ const realOfframpService = {
             return {
                 success: false,
                 error: error instanceof Error ? error.message : "Failed to update tx hash",
+            };
+        }
+    },
+
+    async getUserLimits(
+        walletId?: string,
+        signal?: AbortSignal
+    ): Promise<UserLimitsResponse> {
+        try {
+            const res = await fetchWithRetry(`${OFFRAMP_API_BASE}/limits`, {
+                method: "GET",
+                headers: getHeaders(walletId),
+            }, signal);
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                return {
+                    success: false,
+                    error: data.message || data.error || "Failed to fetch user limits",
+                };
+            }
+
+            return { success: true, data: data.data || data };
+        } catch (error) {
+            if (isAbortError(error)) {
+                throw error;
+            }
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : "Failed to fetch user limits",
             };
         }
     },

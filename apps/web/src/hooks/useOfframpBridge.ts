@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState, useRef, useEffect } from "react";
+import toast from "react-hot-toast";
 import { useWallet } from "@/providers/StellarWalletProvider";
 import { offrampService } from "@/services/offramp.service";
 import type {
@@ -11,8 +12,36 @@ import type {
     QuoteStatusData,
     OfframpCountry,
     ProviderRate,
+    UserOfframpLimits,
 } from "@/types/offramp";
 import { SUPPORTED_OFFRAMP_TOKENS, getAccountNumberRules } from "@/types/offramp";
+
+const RATE_LIMIT_MESSAGE = "Rate limit exceeded. Please wait";
+
+function isRateLimitError(error: unknown): boolean {
+    if (typeof error === "object" && error !== null) {
+        if ("status" in error && error.status === 429) return true;
+
+        if (
+            "response" in error &&
+            typeof error.response === "object" &&
+            error.response !== null &&
+            "status" in error.response &&
+            error.response.status === 429
+        ) {
+            return true;
+        }
+    }
+
+    const message =
+        error instanceof Error
+            ? error.message
+            : typeof error === "string"
+                ? error
+                : "";
+
+    return /\b429\b|rate limit|too many requests/i.test(message);
+}
 
 interface UseOfframpBridgeReturn {
     // State
@@ -47,6 +76,10 @@ interface UseOfframpBridgeReturn {
     // Status tracking
     bridgeTxHash: string | null;
     payoutStatus: QuoteStatusData | null;
+
+    // User Limits
+    userLimits: UserOfframpLimits | null;
+    isLoadingLimits: boolean;
 
     // Controls
     reset: () => void;
@@ -84,6 +117,10 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
     const [bridgeTxHash, setBridgeTxHash] = useState<string | null>(null);
     const [payoutStatus, setPayoutStatus] = useState<QuoteStatusData | null>(null);
 
+    // User Limits State
+    const [userLimits, setUserLimits] = useState<UserOfframpLimits | null>(null);
+    const [isLoadingLimits, setIsLoadingLimits] = useState(false);
+
     // Polling refs
     const payoutPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     // Abort controller ref for component-level cleanup
@@ -96,6 +133,39 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
             abortRef.current?.abort();
         };
     }, []);
+
+    // ---------- Effects: User Limits ----------
+
+    useEffect(() => {
+        if (!isConnected || !address) {
+            setUserLimits(null);
+            return;
+        }
+
+        const controller = new AbortController();
+
+        const fetchLimits = async () => {
+            setIsLoadingLimits(true);
+            try {
+                const result = await offrampService.getUserLimits(address, controller.signal);
+                if (controller.signal.aborted) return;
+                if (result.success && result.data) {
+                    setUserLimits(result.data);
+                } else {
+                    // Non-fatal: proceed without limits if fetch fails
+                    console.warn("Failed to fetch user offramp limits:", result.error);
+                }
+            } catch (error) {
+                if (controller.signal.aborted) return;
+                console.warn("Error fetching user offramp limits:", error);
+            } finally {
+                if (!controller.signal.aborted) setIsLoadingLimits(false);
+            }
+        };
+
+        fetchLimits();
+        return () => controller.abort();
+    }, [isConnected, address]);
 
     // ---------- Handlers ----------
 
@@ -217,13 +287,26 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
                     setQuote(result.data.best);
                     setQuoteError(null);
                 } else {
+                    const rateLimited =
+                        result.status === 429 || isRateLimitError(result.error);
+                    const message = rateLimited
+                        ? RATE_LIMIT_MESSAGE
+                        : result.error || "No rates available";
+
                     setQuote(null);
-                    setQuoteError(result.error || "No rates available");
+                    setQuoteError(message);
+                    if (rateLimited) toast.error(message);
                 }
-            } catch {
+            } catch (error) {
                 if (!controller.signal.aborted) {
+                    const rateLimited = isRateLimitError(error);
+                    const message = rateLimited
+                        ? RATE_LIMIT_MESSAGE
+                        : "Failed to fetch rates";
+
                     setQuote(null);
-                    setQuoteError("Failed to fetch rates");
+                    setQuoteError(message);
+                    if (rateLimited) toast.error(message);
                 }
             } finally {
                 if (!controller.signal.aborted) setIsLoadingQuote(false);
@@ -254,6 +337,16 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
             const selectedToken = SUPPORTED_OFFRAMP_TOKENS.find(t => t.symbol === form.token);
             if (selectedToken && amount < selectedToken.minimumAmount) {
                 setError(`Amount must be at least ${selectedToken.minimumAmount} ${selectedToken.symbol}`);
+                return;
+            }
+
+            // Validate against user's daily tier limit before proceeding to signature
+            if (userLimits && amount > userLimits.remainingDaily) {
+                setError(
+                    `Amount exceeds your daily offramp limit. ` +
+                    `Remaining: ${userLimits.remainingDaily.toLocaleString()} ${form.token} ` +
+                    `(Daily limit: ${userLimits.dailyLimit.toLocaleString()} ${form.token})`
+                );
                 return;
             }
 
@@ -298,7 +391,7 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
                 if (!controller.signal.aborted) setIsLoading(false);
             }
         },
-        [isConnected, address, quote]
+        [isConnected, address, quote, userLimits]
     );
 
     // ---------- Confirm & Process ----------
@@ -404,5 +497,7 @@ export function useOfframpBridge(): UseOfframpBridgeReturn {
         quoteError,
         isVerifyingAccount,
         isLoadingBanks,
+        userLimits,
+        isLoadingLimits,
     };
 }
