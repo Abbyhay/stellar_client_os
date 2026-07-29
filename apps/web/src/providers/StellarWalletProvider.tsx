@@ -128,6 +128,13 @@ export const StellarWalletProvider = ({
       // Sync with backend on session restoration
       offrampService.syncWallet(savedAddress);
     }
+
+    // Cleanup: disconnect the kit when the component unmounts or network changes
+    return () => {
+      walletKit.disconnect().catch(() => {
+        // Silently swallow disconnect errors during cleanup
+      });
+    };
   }, [network]);
 
   const disconnect = useCallback(async () => {
@@ -137,6 +144,16 @@ export const StellarWalletProvider = ({
       connectionAbortRef.current = null;
     }
 
+    // Clean up wallet kit event listeners (e.g. WalletConnect sessions,
+    // module-level polling, etc.) before resetting state
+    if (kit) {
+      try {
+        await kit.disconnect();
+      } catch {
+        // Silently swallow disconnect errors — state is cleared regardless
+      }
+    }
+
     setConnectionStatus("disconnecting");
     setAddress(null);
     setSelectedWalletId(null);
@@ -144,7 +161,7 @@ export const StellarWalletProvider = ({
     safeRemoveItem("stellar_wallet_id");
     safeRemoveItem("stellar_wallet_network");
     setConnectionStatus("idle");
-  }, []);
+  }, [kit]);
 
   const setNetwork = useCallback(
     async (newNetwork: WalletNetwork) => {
