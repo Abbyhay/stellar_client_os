@@ -1829,5 +1829,412 @@ fn test_withdraw_after_pause_and_resume() {
     assert!(recipient_balance > 0);
     assert_eq!(recipient_balance, 600); // 100 + 500
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Mock DEX router used for deposit_with_swap tests
+//
+// Simulates a 2:1 fixed-rate swap: every 2 units of `from_token` yields
+// 1 unit of `dest_token`.  The router mints `dest_token` directly to `to`
+// so we can observe the balance delta without a real on-chain DEX.
+// ──────────────────────────────────────────────────────────────────────────────mod mock_dex {
+    use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
+
+    #[contract]
+    pub struct MockDexRouter;
+
+    #[contractimpl]
+    impl MockDexRouter {
+        /// Fixed 2:1 swap: spends `amount_in` of path[0], mints amount_in/2 of path[last] to `to`.
+        ///
+        /// Token flow:
+        ///   1. Caller (payment contract) has already transferred `amount_in` of path[0]
+        ///      into itself before calling the router.
+        ///   2. Router pulls `amount_in` of path[0] from `to` (the payment contract address)
+        ///      into the router.
+        ///   3. Router mints `out` of path[last] directly to `to` (simulating a reserve swap).
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            amount_in: i128,
+            amount_out_min: i128,
+            path: Vec<Address>,
+            to: Address,
+        ) -> Vec<i128> {
+            let src = path.get(0).unwrap();
+            let dst = path.last().unwrap();
+            let router_addr = env.current_contract_address();
+
+            // Pull source tokens from the caller (payment contract) into router
+            let src_client = token::Client::new(&env, &src);
+            src_client.transfer(&to, &router_addr, &amount_in);
+
+            // Compute output at fixed 2:1 rate
+            let out = amount_in / 2;
+            if out < amount_out_min {
+                panic!("slippage exceeded");
+            }
+
+            // Credit destination tokens to `to` by minting (simulating router reserves)
+            let dst_admin = token::StellarAssetClient::new(&env, &dst);
+            dst_admin.mint(&to, &out);
+
+            let mut result = Vec::new(&env);
+            result.push_back(amount_in);
+            result.push_back(out);
+            result
+        }
+    }
+}
+
+use mock_dex::MockDexRouter;
+
+#[test]
+fn test_deposit_with_swap_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    // Two separate SAC tokens
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    // Register mock DEX router and payment stream contract
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    // Mint source tokens to sender
+    let from_admin = token::StellarAssetClient::new(&env, &from_token);
+    from_admin.mint(&sender, &2000);
+
+    // Create a stream expecting stream_token, with 0 initial deposit
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &stream_token,
+        &1000,
+        &0,
+        &0,
+        &200,
+    );
+
+    // Deposit by swapping 200 from_token -> ~100 stream_token (2:1 mock rate)
+    let empty_path: Vec<Address> = Vec::new(&env);
+    client.deposit_with_swap(&stream_id, &from_token, &200, &90, &empty_path);
+
+    // Stream balance should now be 100
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.balance, 100);
+
+    // Sender should have spent 200 from_token
+    let from_client = token::Client::new(&env, &from_token);
+    assert_eq!(from_client.balance(&sender), 1800);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_deposit_with_swap_canceled_stream() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let from_admin = token::StellarAssetClient::new(&env, &from_token);
+    from_admin.mint(&sender, &2000);
+
+    let stream_token_admin = token::StellarAssetClient::new(&env, &stream_token);
+    stream_token_admin.mint(&sender, &1000);
+
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &1000, &1000, &0, &200);
+    client.cancel_stream(&stream_id);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    // Should panic with StreamNotActive (#7)
+    client.deposit_with_swap(&stream_id, &from_token, &200, &90, &empty_path);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_deposit_with_swap_zero_amount_in() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &1000, &0, &0, &200);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    // amount_in = 0 should panic with InvalidAmount (#4)
+    client.deposit_with_swap(&stream_id, &from_token, &0, &1, &empty_path);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_deposit_with_swap_zero_min_out() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &1000, &0, &0, &200);
+
+    let from_admin = token::StellarAssetClient::new(&env, &from_token);
+    from_admin.mint(&sender, &200);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    // min_amount_out = 0 should panic with InvalidAmount (#4)
+    client.deposit_with_swap(&stream_id, &from_token, &200, &0, &empty_path);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn test_deposit_with_swap_same_token_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let token_admin = token::StellarAssetClient::new(&env, &stream_token);
+    token_admin.mint(&sender, &200);
+
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &1000, &0, &0, &200);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    // from_token == stream.token should panic with InvalidSwapPath (#17)
+    client.deposit_with_swap(&stream_id, &stream_token, &200, &90, &empty_path);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_deposit_with_swap_exceeds_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let from_admin = token::StellarAssetClient::new(&env, &from_token);
+    from_admin.mint(&sender, &10000);
+
+    // Stream total is 100; swapping 2000 from_token yields 1000 stream_token → overflow
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &100, &0, &0, &200);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    // Should panic with DepositExceedsTotal (#14)
+    client.deposit_with_swap(&stream_id, &from_token, &2000, &1, &empty_path);
+}
+
+#[test]
+fn test_deposit_with_swap_emits_both_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let from_admin = token::StellarAssetClient::new(&env, &from_token);
+    from_admin.mint(&sender, &2000);
+
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &1000, &0, &0, &200);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    client.deposit_with_swap(&stream_id, &from_token, &200, &90, &empty_path);
+
+    // At least two events published by deposit_with_swap (SwapDeposit + StreamDeposit)
+    let events = env.events().all();
+    assert!(events.len() >= 2);
+}
+
+#[test]
+fn test_deposit_with_swap_metrics_updated() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let from_admin = token::StellarAssetClient::new(&env, &from_token);
+    from_admin.mint(&sender, &2000);
+
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &1000, &0, &0, &200);
+
+    env.ledger().set_timestamp(42);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    client.deposit_with_swap(&stream_id, &from_token, &200, &90, &empty_path);
+
+    let metrics = client.get_stream_metrics(&stream_id);
+    assert_eq!(metrics.last_activity, 42);
+}
+
+#[test]
+fn test_deposit_with_swap_paused_stream_succeeds() {
+    // Paused streams are not Canceled/Completed, so a swap deposit is allowed
+    // (it tops up the balance ready for when the stream resumes).
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let stream_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let stream_token = stream_sac.address();
+    let from_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let from_token = from_sac.address();
+
+    let dex_router = env.register(MockDexRouter, ());
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin, &fee_collector, &0);
+    client.set_dex_router(&dex_router);
+
+    let from_admin = token::StellarAssetClient::new(&env, &from_token);
+    from_admin.mint(&sender, &2000);
+
+    let stream_id = client.create_stream(&sender, &recipient, &stream_token, &1000, &0, &0, &200);
+    client.pause_stream(&stream_id);
+
+    let stream_before = client.get_stream(&stream_id);
+    assert_eq!(stream_before.status, StreamStatus::Paused);
+
+    let empty_path: Vec<Address> = Vec::new(&env);
+    client.deposit_with_swap(&stream_id, &from_token, &200, &90, &empty_path);
+
+    let stream_after = client.get_stream(&stream_id);
+    assert_eq!(stream_after.balance, 100);
+    assert_eq!(stream_after.status, StreamStatus::Paused); // still paused
+}
+
+#[test]
+fn test_set_and_get_dex_router() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+
+    let contract_id = env.register(PaymentStreamContract, ());
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &fee_collector, &0);
+
+    // Initially no router configured
+    assert_eq!(client.get_dex_router(), None);
+
+    let router_addr = Address::generate(&env);
+    client.set_dex_router(&router_addr);
+
+    assert_eq!(client.get_dex_router(), Some(router_addr));
+}
     
 }

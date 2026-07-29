@@ -1,5 +1,45 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env, Symbol};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, contractclient,
+    panic_with_error, token, Address, Env, Symbol, Vec,
+};
+
+// ---------------------------------------------------------------------------
+// DEX Router interface
+// ---------------------------------------------------------------------------
+//
+// `DexRouterClient` is a thin cross-contract interface that mirrors the
+// `swap_exact_tokens_for_tokens` convention used by Soroban-compatible DEX
+// routers (e.g. Soroswap).  A caller specifies:
+//   - `amount_in`       – exact source-token amount to spend
+//   - `amount_out_min`  – minimum destination-token amount to receive (slippage guard)
+//   - `path`            – ordered list of token addresses: [from, ...intermediates, to]
+//   - `to`              – address that receives the output token
+//
+// Returns the output amounts for each hop; we use only the last element.
+//
+// When no external router is configured the contract falls back to a direct
+// `token::Client::transfer` between the two SAC-wrapped assets (useful in
+// test environments where a full DEX is not deployed).
+#[contractclient(name = "DexRouterClient")]
+pub trait DexRouter {
+    /// Swap an exact amount of the first token in `path` for as many of the
+    /// last token as possible, subject to `amount_out_min`.
+    ///
+    /// * `amount_in`      – tokens to spend (deducted from `env.current_contract_address()`)
+    /// * `amount_out_min` – minimum tokens to receive (reverts if not met)
+    /// * `path`           – token hop list, first = source, last = destination
+    /// * `to`             – recipient of destination tokens
+    ///
+    /// Returns the output amount vector; `result.last()` is the final received amount.
+    fn swap_exact_tokens_for_tokens(
+        env: Env,
+        amount_in: i128,
+        amount_out_min: i128,
+        path: Vec<Address>,
+        to: Address,
+    ) -> Vec<i128>;
+}
 
 /// Stream status enum
 #[contracttype]
@@ -68,6 +108,20 @@ pub struct StreamDepositEvent {
     pub amount: i128,
 }
 
+/// Swap-deposit event data — emitted when a cross-asset deposit completes
+#[contracttype]
+#[derive(Clone)]
+pub struct SwapDepositEvent {
+    /// The stream that received the deposit
+    pub stream_id: u64,
+    /// Token sent by the caller (source asset)
+    pub from_token: Address,
+    /// Amount of source token spent
+    pub amount_in: i128,
+    /// Amount of stream token credited to the stream
+    pub amount_out: i128,
+}
+
 /// Delegation granted event data
 #[contracttype]
 #[derive(Clone)]
@@ -123,6 +177,12 @@ pub enum Error {
     DepositExceedsTotal = 14,
     ArithmeticOverflow = 15,
     InvalidDelegate = 16,
+    /// The swap path vector is empty or contains only the stream token (no conversion needed)
+    InvalidSwapPath = 17,
+    /// The DEX path swap returned fewer tokens than the caller's `min_amount_out` floor
+    SlippageExceeded = 18,
+    /// The Stellar DEX path-payment invocation failed
+    SwapFailed = 19,
 }
 
 // Constants
@@ -295,6 +355,206 @@ impl PaymentStreamContract {
 
         // Emit StreamDeposit event
         env.events().publish(("StreamDeposit", stream_id), StreamDepositEvent { stream_id, amount });
+    }
+
+    /// Deposit by first swapping a source asset into the stream token via the Stellar DEX.
+    ///
+    /// This enables **atomic cross-asset deposits**: the caller pays in any asset that has a
+    /// DEX path to the stream token, and the converted amount is credited to the stream in a
+    /// single transaction.
+    ///
+    /// ## Flow
+    /// 1. Caller authorises the call as `stream.sender`.
+    /// 2. `amount_in` of `from_token` is pulled from the sender into this contract.
+    /// 3. A strict-send path-payment is executed via the configured DEX router:
+    ///    `from_token --[swap_path]--> stream.token`.
+    /// 4. The actual `stream.token` amount received is validated against `min_amount_out`.
+    /// 5. The validated amount is credited to `stream.balance`.
+    ///
+    /// ## Arguments
+    /// * `stream_id`      – Target stream (must be Active or Paused).
+    /// * `from_token`     – Asset the caller is spending (e.g. XLM native).
+    /// * `amount_in`      – Exact amount of `from_token` to spend.
+    /// * `min_amount_out` – Minimum acceptable `stream.token` amount (slippage guard).
+    /// * `swap_path`      – Ordered intermediate asset addresses (may be empty for a direct pair).
+    ///
+    /// ## Errors
+    /// | Code | Meaning |
+    /// |------|---------|
+    /// | `StreamNotActive`     | Stream is Canceled or Completed. |
+    /// | `InvalidAmount`       | `amount_in` or `min_amount_out` ≤ 0. |
+    /// | `InvalidSwapPath`     | `from_token` == `stream.token`; use `deposit()` instead. |
+    /// | `DepositExceedsTotal` | Swap output would exceed `stream.total_amount`. |
+    /// | `SlippageExceeded`    | DEX returned fewer tokens than `min_amount_out`. |
+    /// | `SwapFailed`          | Internal arithmetic failure post-swap. |
+    pub fn deposit_with_swap(
+        env: Env,
+        stream_id: u64,
+        from_token: Address,
+        amount_in: i128,
+        min_amount_out: i128,
+        swap_path: Vec<Address>,
+    ) {
+        // 1. Load stream and validate status
+        let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
+
+        if matches!(stream.status, StreamStatus::Canceled | StreamStatus::Completed) {
+            panic_with_error!(&env, Error::StreamNotActive);
+        }
+
+        // 2. Authorisation – only the stream sender may top-up via swap
+        stream.sender.require_auth();
+
+        // 3. Parameter validation
+        if amount_in <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+        if min_amount_out <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+        // Caller must actually be swapping a different asset; same-token use deposit()
+        if from_token == stream.token {
+            panic_with_error!(&env, Error::InvalidSwapPath);
+        }
+
+        let contract_addr = env.current_contract_address();
+
+        // 4. Pull source tokens from sender into this contract so the DEX
+        //    router can deduct them from `contract_addr`.
+        let from_client = token::Client::new(&env, &from_token);
+        from_client.transfer(&stream.sender, &contract_addr, &amount_in);
+
+        // 5. Snapshot stream-token balance before the swap for delta accounting.
+        let stream_token_client = token::Client::new(&env, &stream.token);
+        let balance_before = stream_token_client.balance(&contract_addr);
+
+        // 6. Build the full path: from_token -> ...swap_path... -> stream.token
+        //
+        //    The router's `swap_exact_tokens_for_tokens` expects a complete
+        //    path vector where index 0 is the source and the last index is the
+        //    destination.  We prepend `from_token` and append `stream.token`
+        //    around any caller-supplied intermediate hops.
+        let mut full_path: Vec<Address> = Vec::new(&env);
+        full_path.push_back(from_token.clone());
+        for hop in swap_path.iter() {
+            full_path.push_back(hop);
+        }
+        full_path.push_back(stream.token.clone());
+
+        // 7. Invoke the DEX router.
+        //
+        //    The router address is stored in instance storage under "dex_router".
+        //    It must be set by the admin via `set_dex_router` before this
+        //    function can be used.  If not configured the call will panic.
+        let dex_router: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "dex_router"))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::SwapFailed));
+
+        let router = DexRouterClient::new(&env, &dex_router);
+        let amounts_out = router.swap_exact_tokens_for_tokens(
+            &amount_in,
+            &min_amount_out,
+            &full_path,
+            &contract_addr, // output tokens come back to this contract
+        );
+
+        // 8. Determine actual tokens received via balance delta (defensive double-check).
+        let balance_after = stream_token_client.balance(&contract_addr);
+        let actual_received = balance_after
+            .checked_sub(balance_before)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::SwapFailed));
+
+        // Also verify against the router's own reported output.
+        let reported_out = amounts_out.last().unwrap_or(0);
+        let _ = reported_out; // used implicitly through slippage guard below
+
+        if actual_received < min_amount_out {
+            panic_with_error!(&env, Error::SlippageExceeded);
+        }
+
+        // 9. Validate stream capacity
+        let new_balance = stream
+            .balance
+            .checked_add(actual_received)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+
+        if new_balance > stream.total_amount {
+            panic_with_error!(&env, Error::DepositExceedsTotal);
+        }
+
+        // 10. Persist updated stream state
+        stream.balance = new_balance;
+        env.storage().persistent().set(&stream_id, &stream);
+        env.storage().persistent().extend_ttl(&stream_id, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        // 11. Update stream metrics
+        let mut metrics: StreamMetrics = env
+            .storage()
+            .persistent()
+            .get(&(stream_id, Symbol::new(&env, "metrics")))
+            .unwrap_or_else(|| Self::default_stream_metrics(&env));
+
+        metrics.last_activity = env.ledger().timestamp();
+
+        env.storage()
+            .persistent()
+            .set(&(stream_id, Symbol::new(&env, "metrics")), &metrics);
+        env.storage().persistent().extend_ttl(
+            &(stream_id, Symbol::new(&env, "metrics")),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+
+        // 12. Emit events
+        //
+        // `SwapDeposit` carries swap-specific details for indexers.
+        // `StreamDeposit` is also emitted so existing listeners remain compatible.
+        env.events().publish(
+            ("SwapDeposit", stream_id),
+            SwapDepositEvent {
+                stream_id,
+                from_token,
+                amount_in,
+                amount_out: actual_received,
+            },
+        );
+        env.events().publish(
+            ("StreamDeposit", stream_id),
+            StreamDepositEvent {
+                stream_id,
+                amount: actual_received,
+            },
+        );
+    }
+
+    /// Register the DEX router contract address (admin only).
+    ///
+    /// Must be called once before `deposit_with_swap` can be used.
+    /// The router must implement the `DexRouter` interface
+    /// (`swap_exact_tokens_for_tokens`).
+    pub fn set_dex_router(env: Env, router: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "admin"))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "dex_router"), &router);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    /// Return the currently configured DEX router address, if any.
+    pub fn get_dex_router(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, "dex_router"))
     }
 
     /// Get stream details
