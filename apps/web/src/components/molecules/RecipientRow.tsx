@@ -58,10 +58,11 @@ export function RecipientRow({
     : null;
 
   const handleAddressChange = (value: string) => {
+    const trimmed = value.trim();
     onChange({
-      address: value,
-      isValid: !validateStellarAddress(value),
-      validationError: validateStellarAddress(value) || undefined,
+      address: trimmed,
+      isValid: !validateStellarAddress(trimmed),
+      validationError: validateStellarAddress(trimmed) || undefined,
     });
   };
 
