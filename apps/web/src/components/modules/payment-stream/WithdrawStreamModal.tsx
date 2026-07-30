@@ -117,19 +117,19 @@ export function WithdrawStreamModal({
     try {
       const amount = BigInt(Math.floor(parseFloat(data.amount) * 10000000))
 
-      // Use the real SDK-backed withdraw from @/lib/api
+      // Use the real SDK-backed withdraw from `@/lib/api`
       // This handles wallet signing through the StellarWalletProvider
-      if (!isConnected || !signTransaction) {
-      notify.error('Wallet not connected');
-      return;
-    }
+      if (!isConnected || !signTransaction || !address) {
+        notify.error('Wallet not connected');
+        return;
+      }
 
-    await withdraw({
-      streamId: Number(stream.id),
-      amount,
-      sender: address || undefined,
-      signTransaction,
-    });
+      await withdraw({
+        streamId: Number(stream.id),
+        amount,
+        sender: address,
+        signTransaction,
+      });
 
       onSuccess?.(`withdraw_${Date.now()}`)
       onOpenChange(false)
