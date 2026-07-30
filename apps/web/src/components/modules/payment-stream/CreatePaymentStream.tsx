@@ -210,8 +210,12 @@ const CreatePaymentStream = () => {
       const durationInSeconds = Math.floor(parseFloat(streamData.durationValue) * durationMultiplier);
       const startTime = Math.floor(Date.now() / 1000);
 
+      if (!isConnected || !address || !signTransaction) {
+        throw new Error('Connect your wallet');
+      }
+
       const streamId = await createStream({
-        sender: address!,
+        sender: address,
         recipient: streamData.recipient,
         token: tokenAddress,
         amount,
