@@ -17,6 +17,8 @@ const StreamCountdown: React.FC<StreamCountdownProps> = ({ endTime, status }) =>
             return;
         }
 
+        setCurrentTime(Date.now());
+
         const interval = setInterval(() => {
             setCurrentTime(Date.now());
         }, 1000);
