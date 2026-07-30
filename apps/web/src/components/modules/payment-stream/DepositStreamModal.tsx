@@ -67,15 +67,15 @@ export function DepositStreamModal({
         return;
       }
 
-      await depositToStream({
-        streamId: Number(stream.id),
+      const hash = await depositToStream({
+        streamId: stream.id,
         amount,
         sender: address,
         signTransaction,
       });
 
       notify.success("Deposit successful!")
-      onSuccess?.(`deposit_${Date.now()}`)
+      onSuccess?.(hash)
       onOpenChange(false)
       reset()
     } catch (error) {

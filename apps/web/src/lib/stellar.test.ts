@@ -75,6 +75,21 @@ describe('StellarService (lib/stellar)', () => {
       const result = StellarService.formatTokenAmount('0');
       expect(result).toBe('0');
     });
+
+    it('preserves trailing zeros when decimals = 0', () => {
+      const result = StellarService.formatTokenAmount('1000', 0);
+      expect(result).toBe('1000');
+    });
+
+    it('does not strip integer trailing zeros when decimals = 0', () => {
+      const result = StellarService.formatTokenAmount('10', 0);
+      expect(result).toBe('10');
+    });
+
+    it('returns 0 when decimals = 0 and amount is 0', () => {
+      const result = StellarService.formatTokenAmount('0', 0);
+      expect(result).toBe('0');
+    });
   });
 
   describe('calculateStreamProgress', () => {

@@ -17,8 +17,7 @@ import {
 } from "@/components/ui/dialog"
 import { withdrawStreamSchema, type WithdrawStreamFormData, type StreamRecord } from "@/lib/validations"
 import { StellarService } from "@/lib/stellar"
-import { withdraw } from "@/lib/api"
-import { isAbortError } from "@/utils/retry"
+import { withdraw, getWithdrawableAmount } from "@/lib/api"
 import { notify } from "@/utils/notification"
 import { useWallet } from "@/providers/StellarWalletProvider"
 
@@ -66,25 +65,27 @@ export function WithdrawStreamModal({
   useEffect(() => {
     if (!open || !stream.id) return
 
-    const controller = new AbortController()
+    let cancelled = false
     setIsLoadingAmount(true)
 
-    // For now, return a placeholder since fetching withdrawable amount
-    // requires a live Soroban RPC connection. In production this will
-    // route through StellarService from @/services/stellar.service.ts
-    // via the SDK client.
-    const timer = setTimeout(() => {
-      if (controller.signal.aborted) return
-      // Placeholder: real implementation calls PaymentStreamClient.getWithdrawableAmount
-      setWithdrawableAmount("0")
-      setIsLoadingAmount(false)
-    }, 500)
+    getWithdrawableAmount({ streamId: stream.id })
+      .then((amount) => {
+        if (!cancelled) {
+          setWithdrawableAmount(amount)
+          setIsLoadingAmount(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWithdrawableAmount("0")
+          setIsLoadingAmount(false)
+        }
+      })
 
     return () => {
-      clearTimeout(timer)
-      controller.abort()
+      cancelled = true
     }
-  }, [open, stream.id, onError])
+  }, [open, stream.id])
 
   // Update amount when useMax changes
   useEffect(() => {
@@ -124,14 +125,14 @@ export function WithdrawStreamModal({
         return;
       }
 
-      await withdraw({
-        streamId: Number(stream.id),
+      const hash = await withdraw({
+        streamId: stream.id,
         amount,
         sender: address,
         signTransaction,
       });
 
-      onSuccess?.(`withdraw_${Date.now()}`)
+      onSuccess?.(hash)
       onOpenChange(false)
       reset()
     } catch (error) {

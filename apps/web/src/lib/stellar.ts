@@ -27,7 +27,9 @@ export class StellarService {
 
   static formatTokenAmount(amount: string, decimals: number = 7): string {
     const num = parseFloat(amount)
-    return num.toFixed(decimals).replace(/\.?0+$/, '')
+    const formatted = num.toFixed(decimals)
+    // Only strip trailing zeros when there is a decimal point
+    return formatted.includes('.') ? formatted.replace(/\.?0+$/, '') : formatted
   }
 
   static calculateStreamProgress(stream: StreamRecord): {

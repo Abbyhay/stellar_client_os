@@ -57,16 +57,18 @@ function ensureSafeNumber(value: bigint): number {
 async function signAndSendTx<T>(
     tx: AssembledTransaction<T>,
     signTransaction?: WalletSigner
-): Promise<void> {
+): Promise<string> {
     if (!signTransaction) {
         throw new Error('Wallet signer is required for contract write operations');
     }
 
-    await tx.signAndSend({
+    const result = await tx.signAndSend({
         signTransaction: async (xdr: string) => ({
             signedTxXdr: await signTransaction(xdr),
         }),
     });
+
+    return result.hash;
 }
 
 function createPaymentStreamClient(publicKey: string): PaymentStreamClient {
@@ -131,11 +133,11 @@ export async function createStream(params: {
 }
 
 export async function withdraw(params: {
-    streamId: number;
+    streamId: string;
     amount: bigint;
     sender?: string;
     signTransaction?: WalletSigner;
-}): Promise<void> {
+}): Promise<string> {
     let sender = params.sender;
     if (!sender) {
         const stream = await stellarService.getStream(BigInt(params.streamId));
@@ -148,7 +150,8 @@ export async function withdraw(params: {
 
     const client = createPaymentStreamClient(sender);
     const tx = await client.withdraw(BigInt(params.streamId), params.amount);
-    await signAndSendTx(tx, params.signTransaction);
+    const hash = await signAndSendTx(tx, params.signTransaction);
+    return hash;
 }
 
 import { createBatches } from '../../../../packages/sdk/src/utils/batchDistribution';
@@ -228,14 +231,22 @@ export async function resumeStream(params: { id: string; signTransaction: (xdr: 
 }
 
 export async function depositToStream(params: {
-    streamId: number;
+    streamId: string;
     amount: bigint;
     sender: string;
     signTransaction?: WalletSigner;
-}): Promise<void> {
+}): Promise<string> {
     const client = createPaymentStreamClient(params.sender);
     const tx = await client.deposit(BigInt(params.streamId), params.amount);
-    await signAndSendTx(tx, params.signTransaction);
+    const hash = await signAndSendTx(tx, params.signTransaction);
+    return hash;
+}
+
+export async function getWithdrawableAmount(params: {
+    streamId: string;
+}): Promise<string> {
+    const amount = await stellarService.getWithdrawableAmount(BigInt(params.streamId));
+    return amount.toString();
 }
 
 export async function cancelStream(params: { id: string; signTransaction: (xdr: string) => Promise<string> }) {
