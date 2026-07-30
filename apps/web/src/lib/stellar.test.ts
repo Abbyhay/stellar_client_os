@@ -99,6 +99,7 @@ describe('StellarService (lib/stellar)', () => {
       totalAmount: string;
     }> = {}) => ({
       id: 'stream_1',
+      contractStreamId: 1,
       sender: 'GD6BXVRVMEPHHXNZYVCI6HIJIB4OOGEFMVZ6OD2EWE37WCTMOVOCNJUW',
       recipient: 'GDQJUTQYK2MQX2VGDR2FYWLIYAQIEGXTQVTFEMGH2BEWFG4BRUY4CKI7',
       token: 'USDC',

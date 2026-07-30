@@ -4,6 +4,8 @@ import { StellarService } from "./stellar"
 // Stream record type for display
 export interface StreamRecord {
   id: string
+  /** Numeric stream ID used for contract operations */
+  contractStreamId: number
   sender: string
   recipient: string
   token: string

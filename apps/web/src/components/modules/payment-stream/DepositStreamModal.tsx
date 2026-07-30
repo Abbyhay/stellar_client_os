@@ -68,7 +68,7 @@ export function DepositStreamModal({
       }
 
       const hash = await depositToStream({
-        streamId: stream.id,
+        streamId: stream.contractStreamId,
         amount,
         sender: address,
         signTransaction,

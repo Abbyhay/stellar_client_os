@@ -133,7 +133,7 @@ export async function createStream(params: {
 }
 
 export async function withdraw(params: {
-    streamId: string;
+    streamId: number;
     amount: bigint;
     sender?: string;
     signTransaction?: WalletSigner;
@@ -231,7 +231,7 @@ export async function resumeStream(params: { id: string; signTransaction: (xdr: 
 }
 
 export async function depositToStream(params: {
-    streamId: string;
+    streamId: number;
     amount: bigint;
     sender: string;
     signTransaction?: WalletSigner;
@@ -243,7 +243,7 @@ export async function depositToStream(params: {
 }
 
 export async function getWithdrawableAmount(params: {
-    streamId: string;
+    streamId: number;
 }): Promise<string> {
     const amount = await stellarService.getWithdrawableAmount(BigInt(params.streamId));
     return amount.toString();

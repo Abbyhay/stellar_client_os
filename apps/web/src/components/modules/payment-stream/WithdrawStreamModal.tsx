@@ -68,7 +68,7 @@ export function WithdrawStreamModal({
     let cancelled = false
     setIsLoadingAmount(true)
 
-    getWithdrawableAmount({ streamId: stream.id })
+    getWithdrawableAmount({ streamId: stream.contractStreamId })
       .then((amount) => {
         if (!cancelled) {
           setWithdrawableAmount(amount)
@@ -126,7 +126,7 @@ export function WithdrawStreamModal({
       }
 
       const hash = await withdraw({
-        streamId: stream.id,
+        streamId: stream.contractStreamId,
         amount,
         sender: address,
         signTransaction,
