@@ -151,10 +151,8 @@ describe('validateEndTime', () => {
     expect(validateEndTime(null, '1', 'hour')).toBeNull();
   });
 
-  it('should accept null startTime with a short valid duration (1 minute)', () => {
-    // effective start = NOW + 60, endTime = NOW + 60 + 60 = NOW + 120 >= NOW + 60 ✓
-    // The "hour" unit makes 1 hour = 3600s, so this is fine
-    expect(validateEndTime(null, '1', 'hour')).toBeNull();
+  it('should accept a duration close to the minimum allowed unit (1 day)', () => {
+    expect(validateEndTime(null, '1', 'day')).toBeNull();
   });
 
   it('should accept an explicit valid startTime (now+60) with a regular duration', () => {
