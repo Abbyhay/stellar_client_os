@@ -672,7 +672,7 @@ fn test_delegate_withdraw() {
 
         // Verify event was emitted (at least one event should exist)
         let events = env.events().all();
-        assert!(events.len() > 0);
+        assert!(!events.events().is_empty());
 }
 
 #[test]
@@ -843,7 +843,7 @@ fn test_revoke_nonexistent_delegate() {
 
     // Check event - no event emitted when revoking non-existent delegate
     let events = env.events().all();
-    assert_eq!(events.len(), 0);
+    assert!(events.events().is_empty());
 }
 
 #[test]
