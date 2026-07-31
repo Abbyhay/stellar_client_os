@@ -52,9 +52,8 @@ export function useBalanceValidation(
   const finalError = debouncedError;
 
   return {
-    balanceError: error,
-    insufficientBalance: !!error,
-    isLoadingBalance: isLoading,
-    availableBalance: balance,
+    error: finalError,
+    insufficientBalance: !!finalError,
+    isLoading,
   };
 }
