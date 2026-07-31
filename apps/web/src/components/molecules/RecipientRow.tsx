@@ -42,12 +42,9 @@ export function RecipientRow({
   className,
 }: RecipientRowProps) {
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
-  const [localAmount, setLocalAmount] = useState(recipient.amount || '');
 
-  // Keep local amount synced with prop if it changes externally
-  useEffect(() => {
-    setLocalAmount(recipient.amount || '');
-  }, [recipient.amount]);
+  // Use prop value directly instead of syncing with local state
+  const localAmount = recipient.amount || '';
 
   // Validate address in real-time
   const addressError = recipient.address ? validateStellarAddress(recipient.address) : null;
