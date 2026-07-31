@@ -72,6 +72,7 @@ export function TokenBalance({
 
   // Reset error state when icon URL or asset code changes
   // This allows the component to attempt loading the new icon
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     setImageError(false);
   }, [iconUrl, assetCode]);

@@ -8,7 +8,7 @@ interface StreamCountdownProps {
 }
 
 const StreamCountdown: React.FC<StreamCountdownProps> = ({ endTime, status }) => {
-    const [currentTime, setCurrentTime] = useState(Date.now());
+    const [currentTime, setCurrentTime] = useState(() => Date.now());
     const normalizedStatus = status.toLowerCase();
 
     useEffect(() => {
