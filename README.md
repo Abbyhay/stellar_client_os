@@ -20,6 +20,7 @@ stellar_client/
 ├── docs/                      # Project documentation
 │   ├── architecture.md
 │   ├── getting-started.md     # Project setup documentation
+│   ├── webhooks.md            # Webhook system documentation
 │   ├── contracts/             # Contracts documentation
 │   │   ├── distributor.md
 │   │   └── payment-stream.md
