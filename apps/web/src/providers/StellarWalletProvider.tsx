@@ -20,9 +20,15 @@ import { isValidStellarAddress } from "@/utils/stellar-validation";
 
 import { offrampService } from "@/services/offramp.service";
 import { notify } from "@/utils/notification";
+import { isLockedWalletError } from "@/utils/wallet-errors";
 
 export type WalletId = string;
-export type ConnectionStatus = "idle" | "connecting" | "connected" | "disconnecting";
+export type ConnectionStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "disconnecting"
+  | "locked";
 
 interface WalletContextType {
   connect: (walletId: WalletId) => Promise<void>;
@@ -30,6 +36,7 @@ interface WalletContextType {
   address: string | null;
   isConnected: boolean;
   isConnecting: boolean;
+  isLocked: boolean;
   connectionStatus: ConnectionStatus;
   selectedWalletId: string | null;
   network: WalletNetwork;
@@ -243,6 +250,14 @@ export const StellarWalletProvider = ({
       else if (error && typeof error === "object" && "message" in error)
         errorMessage = String((error as { message: unknown }).message);
 
+      if (isLockedWalletError(error) || isLockedWalletError({ message: errorMessage })) {
+        notify.error(
+          "Your wallet extension is locked. Unlock it and try connecting again.",
+        );
+        setConnectionStatus("locked");
+        return;
+      }
+
       if (errorMessage.toLowerCase().includes("not installed")) {
         const installHref = WALLET_INSTALL_URL[walletId];
 
@@ -308,6 +323,7 @@ export const StellarWalletProvider = ({
         address,
         isConnected: connectionStatus === "connected",
         isConnecting: connectionStatus === "connecting",
+        isLocked: connectionStatus === "locked",
         connectionStatus,
         selectedWalletId,
         network,

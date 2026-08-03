@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useState, useRef, useEffect } from "react";
 import { LogOut } from "lucide-react";
 import { useWallet } from "@/providers/StellarWalletProvider";
+import { WalletStatus } from "@/components/molecules/WalletStatus";
 
 const ArrowDownIcon = ({
   className = "text-white/70",
@@ -26,7 +27,7 @@ const ArrowDownIcon = ({
 );
 
 export function ConnectButton() {
-  const { isConnected, address, openModal, disconnect } = useWallet();
+  const { isConnected, isLocked, address, openModal, disconnect } = useWallet();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -118,6 +119,11 @@ export function ConnectButton() {
         </AnimatePresence>
       </div>
     );
+  }
+
+  // Locked extension wallet — show Locked badge instead of generic Connect CTA.
+  if (isLocked) {
+    return <WalletStatus />;
   }
 
   return (
