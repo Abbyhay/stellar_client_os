@@ -334,6 +334,7 @@ impl PaymentStreamContract {
     ) -> u64 {
         Self::assert_not_paused(&env);
         sender.require_auth();
+        Self::require_not_paused(&env);
 
         // Validate inputs
         if total_amount <= 0 {
@@ -423,6 +424,7 @@ impl PaymentStreamContract {
         }
 
         stream.sender.require_auth();
+        Self::require_not_paused(&env);
 
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -656,6 +658,7 @@ impl PaymentStreamContract {
         let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
 
         Self::assert_is_recipient_or_delegate(&env, stream_id);
+        Self::require_not_paused(&env);
 
         let available = Self::withdrawable_amount(env.clone(), stream_id);
         if amount > available || amount <= 0 {
