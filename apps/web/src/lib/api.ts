@@ -3,8 +3,7 @@ import { PAYMENT_STREAM_CONTRACT_ID, DISTRIBUTOR_CONTRACT_ID, SOROBAN_RPC_URL, N
 import { env } from '@/lib/env';
 import { throwIfAborted } from '@/utils/retry';
 import { StellarService, type Stream as ServiceStream, type AccountInfo } from '@/services';
-import { PaymentStreamClient } from '../../../../packages/sdk/src/PaymentStreamClient';
-import { DistributorClient } from '../../../../packages/sdk/src/DistributorClient';
+import { PaymentStreamClient, DistributorClient, createBatches } from '@fundable/sdk';
 import { Stream, StreamStatus } from '../types';
 
 type WalletSigner = (xdr: string) => Promise<string>;
@@ -147,8 +146,6 @@ export async function withdraw(params: {
     const tx = await client.withdraw(BigInt(params.streamId), params.amount);
     await signAndSendTx(tx, params.signTransaction);
 }
-
-import { createBatches } from '../../../../packages/sdk/src/utils/batchDistribution';
 
 export async function distribute(params: {
     sender: string;

@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { Horizon } from '@stellar/stellar-sdk';
-import { DistributorClient } from '../../../../packages/sdk/src/DistributorClient';
+import { DistributorClient } from '@fundable/sdk';
 import { useWallet } from '@/providers/StellarWalletProvider';
 import { notify } from '@/utils/notification';
 import { DISTRIBUTOR_CONTRACT_ID, SOROBAN_RPC_URL, NETWORK_PASSPHRASE } from '@/lib/constants';

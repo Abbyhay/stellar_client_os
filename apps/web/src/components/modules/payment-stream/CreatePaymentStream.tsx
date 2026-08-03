@@ -11,7 +11,7 @@ import { PaymentStreamConfirmationModal } from "./PaymentStreamConfirmationModal
 import { capitalizeWord } from "@/lib/utils";
 import { SUPPORTED_TOKENS, PaymentStreamFormData } from "@/lib/validations";
 import { StellarService } from "@/lib/stellar";
-import { validateEndTime } from "@/lib/stream-validation";
+import { validateEndTime, validateContractId } from "@/lib/stream-validation";
 import { useDebouncedCallback } from "@/hooks/use-debounce-callback";
 import { useBalanceValidation } from "@/hooks/use-balance-validation";
 import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
@@ -156,6 +156,14 @@ const CreatePaymentStream = () => {
     }
     if (!StellarService.validateStellarAddress(streamData.recipient)) {
       toast.error("Invalid Stellar address");
+      return;
+    }
+
+    // Validate token contract ID (must be 'native' for XLM or a valid StrKey contract address)
+    const selectedTokenMeta = SUPPORTED_TOKENS.find((t) => t.value === streamData.token);
+    const tokenAddress = selectedTokenMeta?.address;
+    if (!tokenAddress || (tokenAddress !== "native" && !validateContractId(tokenAddress))) {
+      toast.error("Invalid token: contract address is not a valid Stellar contract ID");
       return;
     }
     if (!streamData.amount || parseFloat(streamData.amount) <= 0) {

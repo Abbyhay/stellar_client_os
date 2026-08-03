@@ -102,6 +102,22 @@ pub struct StreamResumedEvent {
     pub paused_duration: u64,
 }
 
+/// Emergency paused event data
+#[contracttype]
+#[derive(Clone)]
+pub struct EmergencyPausedEvent {
+    pub paused_by: Address,
+    pub paused_at: u64,
+}
+
+/// Emergency unpaused event data
+#[contracttype]
+#[derive(Clone)]
+pub struct EmergencyUnpausedEvent {
+    pub unpaused_by: Address,
+    pub unpaused_at: u64,
+}
+
 /// Custom errors for the contract
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -123,6 +139,12 @@ pub enum Error {
     DepositExceedsTotal = 14,
     ArithmeticOverflow = 15,
     InvalidDelegate = 16,
+    /// Protocol is globally paused by the emergency circuit breaker
+    ContractPaused = 17,
+    /// Emergency pause is already active
+    AlreadyPaused = 18,
+    /// Contract is not currently paused
+    NotPaused = 19,
 }
 
 // Constants
@@ -162,6 +184,124 @@ impl PaymentStreamContract {
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
     }
 
+    // -----------------------------------------------------------------------
+    // Emergency pause circuit breaker
+    // -----------------------------------------------------------------------
+
+    /// Internal guard: panics with `ContractPaused` when the global emergency
+    /// pause flag is active.  Call this at the top of every state-mutating
+    /// entry point that should be halted during an incident.
+    fn assert_not_paused(env: &Env) {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, "paused"))
+            .unwrap_or(false);
+        if paused {
+            panic_with_error!(env, Error::ContractPaused);
+        }
+    }
+
+    /// Activate the global emergency pause switch.
+    ///
+    /// When active, all calls to `create_stream`, `deposit`, `withdraw`, and
+    /// `withdraw_max` will be rejected with `Error::ContractPaused`.
+    /// Admin-only operations (fee management, pause/unpause) remain available.
+    ///
+    /// # Authorization
+    /// Requires the stored admin address to sign this transaction.
+    ///
+    /// # Errors
+    /// - `Error::Unauthorized` – caller is not admin.
+    /// - `Error::AlreadyPaused` – the circuit breaker is already active.
+    pub fn emergency_pause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "admin"))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+
+        let already_paused: bool = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "paused"))
+            .unwrap_or(false);
+        if already_paused {
+            panic_with_error!(&env, Error::AlreadyPaused);
+        }
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "paused"), &true);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        let now = env.ledger().timestamp();
+        env.events().publish(
+            ("EmergencyPaused",),
+            EmergencyPausedEvent {
+                paused_by: admin,
+                paused_at: now,
+            },
+        );
+    }
+
+    /// Deactivate the global emergency pause switch, resuming normal operation.
+    ///
+    /// # Authorization
+    /// Requires the stored admin address to sign this transaction.
+    ///
+    /// # Errors
+    /// - `Error::Unauthorized` – caller is not admin.
+    /// - `Error::NotPaused` – the circuit breaker is not currently active.
+    pub fn emergency_unpause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "admin"))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "paused"))
+            .unwrap_or(false);
+        if !paused {
+            panic_with_error!(&env, Error::NotPaused);
+        }
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "paused"), &false);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        let now = env.ledger().timestamp();
+        env.events().publish(
+            ("EmergencyUnpaused",),
+            EmergencyUnpausedEvent {
+                unpaused_by: admin,
+                unpaused_at: now,
+            },
+        );
+    }
+
+    /// Returns `true` when the global emergency pause is active.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, "paused"))
+            .unwrap_or(false)
+    }
+
+    // -----------------------------------------------------------------------
+    // Core stream operations
+    // -----------------------------------------------------------------------
+
     /// Create a new payment stream
     pub fn create_stream(
         env: Env,
@@ -173,6 +313,7 @@ impl PaymentStreamContract {
         start_time: u64,
         end_time: u64,
     ) -> u64 {
+        Self::assert_not_paused(&env);
         sender.require_auth();
 
         // Validate inputs
@@ -255,6 +396,7 @@ impl PaymentStreamContract {
 
     /// Deposit tokens to an existing stream
     pub fn deposit(env: Env, stream_id: u64, amount: i128) {
+        Self::assert_not_paused(&env);
         let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
 
         if matches!(stream.status, StreamStatus::Canceled | StreamStatus::Completed) {
@@ -491,6 +633,7 @@ impl PaymentStreamContract {
 
     /// Withdraw from a stream
     pub fn withdraw(env: Env, stream_id: u64, amount: i128) {
+        Self::assert_not_paused(&env);
         let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
 
         Self::assert_is_recipient_or_delegate(&env, stream_id);
@@ -547,6 +690,7 @@ impl PaymentStreamContract {
 
     /// Withdraw the maximum available amount from a stream
     pub fn withdraw_max(env: Env, stream_id: u64) {
+        Self::assert_not_paused(&env);
         let available = Self::withdrawable_amount(env.clone(), stream_id);
         if available <= 0 {
             panic_with_error!(&env, Error::InsufficientWithdrawable);
