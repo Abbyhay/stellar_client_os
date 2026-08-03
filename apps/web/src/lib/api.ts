@@ -47,11 +47,8 @@ function mapServiceStream(stream: ServiceStream): Stream {
     };
 }
 
-function ensureSafeNumber(value: bigint): number {
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error('Returned stream id exceeds JavaScript safe integer range');
-    }
-    return Number(value);
+function serializeStreamId(value: bigint): string {
+    return value.toString();
 }
 
 async function signAndSendTx<T>(
@@ -109,7 +106,7 @@ export async function createStream(params: {
     startTime: number;
     endTime: number;
     signTransaction?: WalletSigner;
-}): Promise<number> {
+}): Promise<string> {
     const client = createPaymentStreamClient(params.sender);
     const tx = await client.createStream({
         sender: params.sender,
@@ -127,7 +124,7 @@ export async function createStream(params: {
     if (typeof streamId !== 'bigint') {
         throw new Error('Contract did not return a stream id');
     }
-    return ensureSafeNumber(streamId);
+    return serializeStreamId(streamId);
 }
 
 export async function withdraw(params: {
