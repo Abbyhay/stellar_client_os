@@ -76,7 +76,7 @@ export const StellarWalletProvider = ({
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(() => {
     if (typeof window === 'undefined') return "idle";
     const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("stellar_wallet_id");
+    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
     const savedNetwork = safeGetItem("stellar_wallet_network");
     console.log('Lazy init connectionStatus:', { savedAddress, savedWalletId, savedNetwork });
     if (savedAddress && isValidStellarAddress(savedAddress) && savedWalletId && savedNetwork === WalletNetwork.TESTNET) {
@@ -87,7 +87,7 @@ export const StellarWalletProvider = ({
   const [selectedWalletId, setSelectedWalletId] = useState<WalletId | null>(() => {
     if (typeof window === 'undefined') return null;
     const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("stellar_wallet_id");
+    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
     const savedNetwork = safeGetItem("stellar_wallet_network");
     console.log('Lazy init selectedWalletId:', { savedWalletId, savedNetwork });
     if (savedNetwork === WalletNetwork.TESTNET && savedAddress && isValidStellarAddress(savedAddress)) {
@@ -116,14 +116,14 @@ export const StellarWalletProvider = ({
 
     // RESTORE SESSION
     const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("stellar_wallet_id");
+    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
     const savedNetwork = safeGetItem("stellar_wallet_network");
 
     if (savedAddress && savedWalletId && savedNetwork === network) {
       if (!isValidStellarAddress(savedAddress)) {
         // Tampered or invalid address — clear storage and force reconnect
         safeRemoveItem("stellar_wallet_address");
-        safeRemoveItem("stellar_wallet_id");
+        safeRemoveItem("@fundable/web:selected_wallet");
         safeRemoveItem("stellar_wallet_network");
         setAddress(null);
         setSelectedWalletId(null);
@@ -148,7 +148,7 @@ export const StellarWalletProvider = ({
     setAddress(null);
     setSelectedWalletId(null);
     safeRemoveItem("stellar_wallet_address");
-    safeRemoveItem("stellar_wallet_id");
+    safeRemoveItem("@fundable/web:selected_wallet");
     safeRemoveItem("stellar_wallet_network");
     setConnectionStatus("idle");
   }, []);
@@ -237,7 +237,7 @@ export const StellarWalletProvider = ({
       setSelectedWalletId(walletId);
       setConnectionStatus("connected");
       safeSetItem("stellar_wallet_address", resolvedAddress);
-      safeSetItem("stellar_wallet_id", walletId);
+      safeSetItem("@fundable/web:selected_wallet", walletId);
       safeSetItem("stellar_wallet_network", network);
 
       // Sync with backend on new connection

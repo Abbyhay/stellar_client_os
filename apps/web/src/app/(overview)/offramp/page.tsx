@@ -204,6 +204,7 @@ export default function OfframpPage() {
                     formState={formState}
                     onClose={handleCloseQuoteModal}
                     onConfirm={handleConfirmBridge}
+                    onRefresh={handleProceedToConfirm}
                     isLoading={isLoading}
                     isSubmitting={bridgeGuard.isGuardActive}
                 />
