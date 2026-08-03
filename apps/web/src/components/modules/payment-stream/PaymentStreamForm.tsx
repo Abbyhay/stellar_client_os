@@ -6,6 +6,7 @@ import InputWithLabel from "@/components/molecules/InputWithLabel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2, Lock, AlertCircle, Calendar } from "lucide-react";
+import { useWallet } from "@/providers/StellarWalletProvider";
 import {
   validateEndTime,
   calculateEndTime,
@@ -46,10 +47,16 @@ export function PaymentStreamForm({
   balanceError,
   insufficientBalance,
 }: StreamFormProps) {
+  const { address } = useWallet();
+
   const booleanOptions = [
     { label: "Yes", value: "true" },
     { label: "No", value: "false" },
   ];
+
+  const isSelfRecipient = Boolean(
+    address && streamData.recipient && streamData.recipient.trim() === address
+  );
 
   const handleStreamDataChange = (
     key: keyof StreamFormData,
@@ -80,6 +87,7 @@ export function PaymentStreamForm({
   const isFormValid =
     !isSubmitting &&
     !insufficientBalance &&
+    !isSelfRecipient &&
     streamData.name &&
     streamData.durationValue &&
     streamData.recipient &&
@@ -148,6 +156,11 @@ export function PaymentStreamForm({
             value={streamData.recipient}
             onChange={(e) =>
               handleStreamDataChange("recipient", e.target.value)
+            }
+            errorMessage={
+              isSelfRecipient
+                ? "Recipient cannot be sender address"
+                : undefined
             }
           />
         </div>
