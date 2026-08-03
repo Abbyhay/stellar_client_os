@@ -4,12 +4,13 @@ import { cn } from "@/lib/utils"
 export type SwitchProps = React.InputHTMLAttributes<HTMLInputElement>
 
 const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
-  ({ className, checked, ...props }, ref) => {
+  ({ className, checked, title, ...props }, ref) => {
     return (
       <label 
         className="relative inline-flex items-center cursor-pointer" 
         role="switch"
         aria-checked={checked}
+        title={title}
       >
         <input
           type="checkbox"
