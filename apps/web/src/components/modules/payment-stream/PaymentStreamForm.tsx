@@ -183,13 +183,15 @@ export function PaymentStreamForm({
               />
             </div>
 
-            {/* End Time Validation Error */}
-            {endTimeValidation.error && (
-              <div className="mt-2 flex items-start gap-2 text-red-400 text-sm">
-                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <span>{endTimeValidation.error}</span>
-              </div>
-            )}
+            <div aria-live="polite" aria-atomic="true">
+              {/* End Time Validation Error */}
+              {endTimeValidation.error && (
+                <div className="mt-2 flex items-start gap-2 text-red-400 text-sm">
+                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <span>{endTimeValidation.error}</span>
+                </div>
+              )}
+            </div>
 
             {/* End Time Preview */}
             {endTimeValidation.isValid && endTimeValidation.endTime && (
