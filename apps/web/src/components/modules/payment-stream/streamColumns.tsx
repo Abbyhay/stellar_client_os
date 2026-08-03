@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Loader2 } from "lucide-react";
 import { sliceAddress } from "@/lib/utils";
 import { format } from "date-fns";
 import { ColumnDef } from "@tanstack/react-table";
@@ -17,6 +18,9 @@ const getStatusColor = (status: string) => {
         case "paused":
             return "bg-amber-500";
         case "completed":
+            return "bg-gray-500";
+        case "confirming":
+            return "bg-amber-400";
         default:
             return "bg-zinc-500";
     }
@@ -112,7 +116,14 @@ export const streamColumns: ColumnDef<StreamRecord>[] = [
         cell: ({ row }) => {
             const stream = row.original;
             const now = Date.now();
-            const effectiveStatus = now > stream.endTime ? "completed" : stream.status;
+            // Don't apply time-based status overrides while the stream is still
+            // being confirmed on-chain — the end time may not be meaningful yet.
+            const isConfirming = stream.status?.toLowerCase() === "confirming";
+            const effectiveStatus = isConfirming
+                ? "confirming"
+                : now > stream.endTime
+                ? "completed"
+                : stream.status;
             return (
                 <div className="min-w-[150px]">
                     <StreamProgressBar
@@ -145,7 +156,12 @@ export const streamColumns: ColumnDef<StreamRecord>[] = [
             const endTime = row.getValue("endTime") as number;
             const status = row.original.status;
             const now = Date.now();
-            const effectiveStatus = now > endTime ? "completed" : status;
+            const isConfirming = status?.toLowerCase() === "confirming";
+            const effectiveStatus = isConfirming
+                ? "confirming"
+                : now > endTime
+                ? "completed"
+                : status;
             const formattedDate = format(new Date(endTime), "MMM dd, yyyy HH:mm");
             return (
                 <div className="flex flex-col items-center space-y-1">
@@ -161,11 +177,31 @@ export const streamColumns: ColumnDef<StreamRecord>[] = [
         cell: ({ row }) => {
             const endTime = row.original.endTime;
             const currentTime = Date.now();
+            const rawStatus = row.getValue("status") as string;
 
-            const status =
-                currentTime > endTime
-                    ? "completed"
-                    : (row.getValue("status") as string);
+            // A stream pending on-chain confirmation gets a distinct "Confirming..."
+            // badge so users can tell it apart from an already-Active stream.
+            const isConfirming = rawStatus?.toLowerCase() === "confirming";
+
+            const status = isConfirming
+                ? "confirming"
+                : currentTime > endTime
+                ? "completed"
+                : rawStatus;
+
+            if (isConfirming) {
+                return (
+                    <div className="flex justify-center items-center gap-1.5">
+                        <Loader2
+                            className="size-3.5 text-amber-400 animate-spin shrink-0"
+                            aria-hidden="true"
+                        />
+                        <span className="text-amber-300 font-medium animate-pulse whitespace-nowrap">
+                            Confirming...
+                        </span>
+                    </div>
+                );
+            }
 
             const badgeStyle = getStatusBadgeStyle(status);
 
