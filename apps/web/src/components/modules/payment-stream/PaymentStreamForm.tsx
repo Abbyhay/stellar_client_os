@@ -162,7 +162,6 @@ export function PaymentStreamForm({
                 className={`border-zinc-700 bg-zinc-800 rounded h-12 placeholder:text-zinc-500 text-white ${
                   endTimeValidation.error ? "border-red-500" : ""
                 }`}
-                maxLength={streamData.duration === "hour" ? 1 : 3}
                 placeholder="Value eg. 1"
                 value={streamData.durationValue}
                 onChange={(e) =>
@@ -171,7 +170,14 @@ export function PaymentStreamForm({
               />
               <AppSelect
                 className="h-12"
-                setValue={(value) => handleStreamDataChange("duration", value)}
+                setValue={(value) => {
+                  setStreamData((prev) => ({
+                    ...prev,
+                    duration: value,
+                    durationValue: prev.durationValue,
+                  }));
+                }}
+                value={streamData.duration}
                 options={durationOptions}
                 placeholder={streamData.duration || "Pick a duration"}
               />
