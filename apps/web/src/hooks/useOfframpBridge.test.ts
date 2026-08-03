@@ -19,6 +19,7 @@ vi.mock("@/services/offramp.service", () => ({
         updateQuoteTxHash: vi.fn(),
         getQuoteStatus: vi.fn(),
         getUserLimits: vi.fn(),
+        getProviderLimits: vi.fn(),
     },
 }));
 
@@ -77,8 +78,10 @@ function createWrapper() {
     const queryClient = new QueryClient({
         defaultOptions: { queries: { retry: false } },
     });
-    return ({ children }: { children: React.ReactNode }) =>
+    const Wrapper = ({ children }: { children: React.ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children);
+    Wrapper.displayName = "QueryClientWrapper";
+    return Wrapper;
 }
 
 /** Drain all fake timers and flush microtasks */
@@ -108,6 +111,16 @@ describe("useOfframpBridge", () => {
                 dailyUsed: 0,
                 remainingDaily: 1000,
                 tier: "standard",
+            },
+        });
+        (offrampService.getProviderLimits as ReturnType<typeof vi.fn>).mockResolvedValue({
+            success: true,
+            data: {
+                minimumAmount: 10,
+                providers: [
+                    { providerId: "cashwyre", minimumAmount: 10 },
+                    { providerId: "autoramp", minimumAmount: 10 },
+                ],
             },
         });
     });
@@ -210,6 +223,32 @@ describe("useOfframpBridge", () => {
         await drainTimers();
 
         expect(result.current.quoteError).toBe("Failed to fetch rates");
+    });
+
+    it("rejects an amount below the provider minimum", async () => {
+        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
+
+        act(() => { result.current.handleFormChange("amount", "5"); });
+        await drainTimers();
+
+        expect(result.current.providerMinimumAmount).toBe(10);
+        await act(async () => { await result.current.getQuote({ ...result.current.formState }); });
+
+        expect(result.current.error).toBe("Amount must be at least 10 USDC");
+        expect(offrampService.createOfframp).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the token minimum when provider limits are unavailable", async () => {
+        (offrampService.getProviderLimits as ReturnType<typeof vi.fn>).mockResolvedValue({
+            success: false,
+            error: "Provider limits unavailable",
+        });
+        const { result } = renderHook(() => useOfframpBridge(), { wrapper: createWrapper() });
+
+        await drainTimers();
+
+        expect(result.current.providerMinimumAmount).toBe(1);
+        expect(result.current.isLoadingProviderMinimum).toBe(false);
     });
 
     // --- getQuote (form → quote step) ---
