@@ -1,5 +1,6 @@
 import type { AssembledTransaction } from '@stellar/stellar-sdk/contract';
-import { PAYMENT_STREAM_CONTRACT_ID, DISTRIBUTOR_CONTRACT_ID, SOROBAN_RPC_URL, NETWORK_PASSPHRASE } from '@/lib/constants';
+import { PAYMENT_STREAM_CONTRACT_ID, DISTRIBUTOR_CONTRACT_ID } from '@/lib/env';
+import { SOROBAN_RPC_URL, NETWORK_PASSPHRASE } from '@/lib/constants';
 import { env } from '@/lib/env';
 import { throwIfAborted } from '@/utils/retry';
 import { StellarService, type Stream as ServiceStream, type AccountInfo } from '@/services';

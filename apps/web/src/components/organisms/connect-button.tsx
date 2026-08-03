@@ -29,12 +29,8 @@ const ArrowDownIcon = ({
 export function ConnectButton() {
   const { isConnected, isLocked, address, openModal, disconnect } = useWallet();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const [mounted, setMounted] = useState(true);
   const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   // Close dropdown when clicking outside
   useEffect(() => {
