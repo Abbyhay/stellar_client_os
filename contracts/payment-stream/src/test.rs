@@ -1916,7 +1916,7 @@ fn test_withdraw_after_pause_and_resume() {
         client.emergency_pause();
 
         let events = env.events().all();
-        assert!(events.len() > 0);
+        assert!(events.events().len() > 0);
     }
 
     /// `emergency_unpause` emits the correct event.
@@ -1930,7 +1930,7 @@ fn test_withdraw_after_pause_and_resume() {
         client.emergency_unpause();
 
         let events = env.events().all();
-        assert!(events.len() > 0);
+        assert!(events.events().len() > 0);
     }
 
     /// Double-pause is rejected with `AlreadyPaused` (error code 18).
@@ -2195,5 +2195,420 @@ fn test_withdraw_after_pause_and_resume() {
 
         assert!(client.is_paused());
     }
-    
+
+    // -----------------------------------------------------------------------
+    // Cliff-period linear vesting tests
+    // -----------------------------------------------------------------------
+
+    /// A stream created with a cliff stores and reports the cliff duration.
+    #[test]
+    fn test_create_stream_with_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &10,
+        );
+
+        assert_eq!(stream_id, 1);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.cliff_duration, 10);
+        assert_eq!(stream.total_amount, 1000);
+        assert_eq!(stream.status, StreamStatus::Active);
+    }
+
+    /// A plain `create_stream` always reports a zero cliff duration, preserving
+    /// the legacy no-cliff behaviour.
+    #[test]
+    fn test_create_stream_cliff_duration_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream(&sender, &recipient, &token, &1000, &1000, &0, &100);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.cliff_duration, 0);
+    }
+
+    /// Creating a stream whose cliff is not shorter than its duration is rejected.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #23)")]
+    fn test_create_stream_with_cliff_invalid() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // cliff_duration (100) is not shorter than duration (100 - 0)
+        client.create_stream_with_cliff(&sender, &recipient, &token, &1000, &1000, &0, &100, &100);
+    }
+
+    /// Nothing is withdrawable while the clock is inside the cliff period.
+    #[test]
+    fn test_cliff_blocks_withdrawal_before_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+
+        env.ledger().set_timestamp(29);
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+    }
+
+    /// Attempting a withdrawal while the clock is inside the cliff period is
+    /// rejected with `InsufficientWithdrawable`.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #10)")]
+    fn test_withdraw_before_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        client.withdraw(&stream_id, &100);
+    }
+
+    /// At the exact cliff boundary the pro-rata share accrued during the cliff
+    /// becomes claimable.
+    #[test]
+    fn test_cliff_release_at_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // 1000 tokens over 100 seconds with a 20-second cliff.
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &20,
+        );
+
+        // At t = 20 the pro-rata share (20/100 * 1000 = 200) is available.
+        env.ledger().set_timestamp(20);
+        assert_eq!(client.withdrawable_amount(&stream_id), 200);
+
+        // Withdraw that share.
+        client.withdraw(&stream_id, &200);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.withdrawn_amount, 200);
+
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&recipient), 200);
+        assert_eq!(token_client.balance(&contract_id), 800);
+    }
+
+    /// After the cliff, the amount available grows linearly over the whole
+    /// vesting window.
+    #[test]
+    fn test_cliff_linear_vesting_after_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // 1000 tokens over 100 seconds, cliff 20 seconds.
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &20,
+        );
+
+        // t=25 -> 250, t=50 -> 500, t=80 -> 800, t=100 -> 1000.
+        env.ledger().set_timestamp(25);
+        assert_eq!(client.withdrawable_amount(&stream_id), 250);
+
+        env.ledger().set_timestamp(50);
+        assert_eq!(client.withdrawable_amount(&stream_id), 500);
+
+        env.ledger().set_timestamp(80);
+        assert_eq!(client.withdrawable_amount(&stream_id), 800);
+
+        env.ledger().set_timestamp(100);
+        assert_eq!(client.withdrawable_amount(&stream_id), 1000);
+    }
+
+    /// `withdraw_max` respects the cliff: rejected before, works after.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #10)")]
+    fn test_withdraw_max_before_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        client.withdraw_max(&stream_id);
+    }
+
+    /// Cancelling inside the cliff returns the full escrowed balance to the
+    /// sender because nothing has vested yet.
+    #[test]
+    fn test_cancel_before_cliff_refunds_full_balance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        client.cancel_stream(&stream_id);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.status, StreamStatus::Canceled);
+
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&sender), 1000);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    /// Pausing a stream inside its cliff keeps the effective elapsed time
+    /// stopped, so the cliff must still elapse after the pause is lifted.
+    #[test]
+    fn test_cliff_with_pause_and_resume() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // 1000 over 100s, cliff 30s.
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        // Vest 20s, then pause for 40s.
+        env.ledger().set_timestamp(20);
+        client.pause_stream(&stream_id);
+
+        env.ledger().set_timestamp(60);
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+
+        client.resume_stream(&stream_id);
+
+        // Resume: end_time extended by 40s (now 140). Effective elapsed =
+        // (current - start) - paused = (60 - 0) - 40 = 20, still below cliff 30.
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+
+        // Advance to effective elapsed = 40 -> vested = 1000 * 40 / 100 = 400.
+        env.ledger().set_timestamp(80);
+        assert_eq!(client.withdrawable_amount(&stream_id), 400);
+    }
+
 }
