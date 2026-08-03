@@ -23,6 +23,8 @@ interface RecipientRowProps {
   onChange: (updates: Partial<Recipient>) => void;
   /** Callback when recipient should be removed */
   onRemove: () => void;
+  /** Optional ref to move focus to this row's address input */
+  addressInputRef?: React.Ref<HTMLInputElement>;
   /** Whether the row is disabled */
   disabled?: boolean;
   /** Additional CSS classes */
@@ -38,6 +40,7 @@ export function RecipientRow({
   index,
   onChange,
   onRemove,
+  addressInputRef,
   disabled = false,
   className,
 }: RecipientRowProps) {
@@ -100,6 +103,7 @@ export function RecipientRow({
       <div className="flex-1 min-w-0">
         <div className="space-y-1">
           <Input
+            ref={addressInputRef}
             type="text"
             placeholder="Stellar address (G... or C...)"
             value={recipient.address}
