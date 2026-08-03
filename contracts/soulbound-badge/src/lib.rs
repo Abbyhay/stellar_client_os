@@ -1,600 +1,806 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype,
-    Address, Env, String, Symbol,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Symbol, Vec,
 };
 
-// ---------------------------------------------------------------------------
-// Storage TTL constants (~30 / ~31 days at 5 s/ledger)
-// ---------------------------------------------------------------------------
-const LEDGER_THRESHOLD: u32 = 518_400;
-const LEDGER_BUMP: u32 = 535_680;
+/// Funding milestone threshold levels for badge eligibility
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub enum MilestoneLevel {
+    Bronze = 1,    // 1,000 tokens
+    Silver = 2,    // 10,000 tokens
+    Gold = 3,      // 100,000 tokens
+    Platinum = 4,  // 1,000,000 tokens
+    Diamond = 5,   // 10,000,000 tokens
+}
 
-// ---------------------------------------------------------------------------
-// Error codes
-// ---------------------------------------------------------------------------
+/// Soulbound badge data structure
+#[contracttype]
+#[derive(Clone)]
+pub struct Badge {
+    pub badge_id: u64,
+    pub owner: Address,
+    pub milestone_level: MilestoneLevel,
+    pub total_contributed: i128,
+    pub minted_at: u64,
+}
 
-/// All contract errors with explicit u32 discriminants for stable ABI.
+/// User contribution tracking
+#[contracttype]
+#[derive(Clone)]
+pub struct UserContribution {
+    pub total_contributed: i128,
+    pub badges_minted: Vec<MilestoneLevel>,
+    pub last_updated: u64,
+}
+
+/// Badge minted event data
+#[contracttype]
+#[derive(Clone)]
+pub struct BadgeMintedEvent {
+    pub badge_id: u64,
+    pub owner: Address,
+    pub milestone_level: MilestoneLevel,
+    pub total_contributed: i128,
+    pub timestamp: u64,
+}
+
+/// Contribution recorded event data
+#[contracttype]
+#[derive(Clone)]
+pub struct ContributionRecordedEvent {
+    pub contributor: Address,
+    pub amount: i128,
+    pub total_contributed: i128,
+    pub timestamp: u64,
+}
+
+/// Custom errors for the contract
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    /// Contract has already been initialised.
     AlreadyInitialized = 1,
-    /// Contract has not been initialised yet.
     NotInitialized = 2,
-    /// Caller is not the contract admin.
     Unauthorized = 3,
-    /// Requested badge ID does not exist.
-    BadgeNotFound = 4,
-    /// Requested campaign does not exist.
-    CampaignNotFound = 5,
-    /// Funding threshold must be > 0.
-    InvalidThreshold = 6,
-    /// Backer has already received a badge for this campaign milestone.
+    InvalidAmount = 4,
+    InvalidMilestone = 5,
+    BadgeNotFound = 6,
     BadgeAlreadyMinted = 7,
-    /// Backer contribution does not meet the campaign threshold.
-    ThresholdNotMet = 8,
-    /// Soulbound badges cannot be transferred.
-    TransferNotAllowed = 9,
-    /// Contribution amount must be > 0.
-    InvalidContribution = 10,
-    /// Campaign name must be non-empty.
-    InvalidCampaignName = 11,
-    /// Campaign is no longer accepting contributions or mints.
-    CampaignInactive = 12,
+    InvalidContributor = 8,
+    ArithmeticOverflow = 9,
+    InvalidToken = 10,
 }
 
-// ---------------------------------------------------------------------------
-// Storage key enum
-// ---------------------------------------------------------------------------
-
+// Storage keys
 #[contracttype]
 pub enum DataKey {
-    /// Global admin address.
     Admin,
-    /// Running total of campaigns created.
-    CampaignCounter,
-    /// Running total of badges minted.
     BadgeCounter,
-    /// Campaign config keyed by campaign_id.
-    Campaign(u64),
-    /// Backer contribution record keyed by (campaign_id, backer).
-    Contribution(u64, Address),
-    /// Badge record keyed by badge_id.
+    AcceptedToken,
+    UserContribution(Address),
     Badge(u64),
-    /// Existence sentinel keyed by (campaign_id, backer) to prevent duplicate mints.
-    BadgeOwner(u64, Address),
+    UserBadges(Address),
 }
 
-// ---------------------------------------------------------------------------
-// Domain types
-// ---------------------------------------------------------------------------
+// Constants for milestone thresholds
+const BRONZE_THRESHOLD: i128 = 1_000;
+const SILVER_THRESHOLD: i128 = 10_000;
+const GOLD_THRESHOLD: i128 = 100_000;
+const PLATINUM_THRESHOLD: i128 = 1_000_000;
+const DIAMOND_THRESHOLD: i128 = 10_000_000;
 
-/// Configuration for a single fundraising campaign milestone.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct Campaign {
-    /// Unique numeric identifier assigned at creation.
-    pub id: u64,
-    /// Human-readable display name (max 32 bytes, enforced off-chain).
-    pub name: String,
-    /// Minimum cumulative contribution (in token stroops / base units) required
-    /// to qualify for a badge.
-    pub threshold: i128,
-    /// Address authorised to record contributions for this campaign.
-    /// Typically the campaign fundraiser or a trusted oracle.
-    pub organiser: Address,
-    /// Whether the campaign is still accepting contributions.
-    pub active: bool,
-}
-
-/// An on-chain record of a backer's cumulative contribution to one campaign.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct ContributionRecord {
-    pub campaign_id: u64,
-    pub backer: Address,
-    /// Running total of all contributions recorded for this backer.
-    pub total: i128,
-}
-
-/// A soulbound (non-transferable) badge awarded to a qualifying backer.
-///
-/// Soulbound semantics are enforced by the contract: there is no `transfer`
-/// function and the `owner` field is immutable after minting.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct SoulboundBadge {
-    /// Unique badge identifier.
-    pub id: u64,
-    /// Campaign the badge was awarded for.
-    pub campaign_id: u64,
-    /// Wallet that earned the badge — permanently bound, never changed.
-    pub owner: Address,
-    /// Contribution total at time of minting.
-    pub contribution_at_mint: i128,
-    /// Ledger timestamp when the badge was minted.
-    pub minted_at: u64,
-}
-
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
-
-/// Emitted when a new campaign is created.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct CampaignCreatedEvent {
-    pub campaign_id: u64,
-    pub name: String,
-    pub threshold: i128,
-    pub organiser: Address,
-}
-
-/// Emitted when a backer's contribution is recorded.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct ContributionRecordedEvent {
-    pub campaign_id: u64,
-    pub backer: Address,
-    pub amount: i128,
-    pub new_total: i128,
-}
-
-/// Emitted when a soulbound badge is minted.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct BadgeMintedEvent {
-    pub badge_id: u64,
-    pub campaign_id: u64,
-    pub owner: Address,
-    pub contribution_at_mint: i128,
-    pub minted_at: u64,
-}
-
-// ---------------------------------------------------------------------------
-// Contract
-// ---------------------------------------------------------------------------
+// Storage TTL constants
+const LEDGER_THRESHOLD: u32 = 518400; // ~30 days at 5s/ledger
+const LEDGER_BUMP: u32 = 535680; // ~31 days
 
 #[contract]
 pub struct SoulboundBadgeContract;
 
 #[contractimpl]
 impl SoulboundBadgeContract {
-    // -----------------------------------------------------------------------
-    // Admin / setup
-    // -----------------------------------------------------------------------
-
-    /// Initialise the contract.
-    ///
-    /// Must be called exactly once by the deployer.  The `admin` address will
-    /// be the only account allowed to create campaigns and mint badges.
-    ///
+    /// Initialize the contract with admin and accepted token
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `admin` - The admin address authorized to manage the contract
+    /// * `accepted_token` - The token address accepted for contributions
+    /// 
     /// # Errors
-    /// * [`Error::AlreadyInitialized`] – called more than once.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+    /// * `Error::AlreadyInitialized` - If contract is already initialized
+    pub fn initialize(env: Env, admin: Address, accepted_token: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
-
+        
         admin.require_auth();
-
+        
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::CampaignCounter, &0u64);
         env.storage().instance().set(&DataKey::BadgeCounter, &0u64);
+        env.storage().instance().set(&DataKey::AcceptedToken, &accepted_token);
+        
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-
-        Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Campaign management
-    // -----------------------------------------------------------------------
-
-    /// Create a new fundraising campaign with a badge-qualification threshold.
-    ///
-    /// Only the admin may create campaigns.  The `organiser` will be the
-    /// address allowed to call [`record_contribution`] for this campaign.
-    ///
+    /// Record a contribution and automatically mint badges if milestone thresholds are reached
+    /// 
     /// # Arguments
-    /// * `name`      – Display name for the campaign (non-empty).
-    /// * `threshold` – Minimum cumulative contribution to qualify for a badge.
-    /// * `organiser` – Address authorised to record contributions.
-    ///
-    /// # Returns
-    /// The newly assigned `campaign_id`.
-    ///
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The address making the contribution
+    /// * `amount` - The amount of tokens contributed
+    /// 
     /// # Errors
-    /// * [`Error::NotInitialized`]   – contract not yet initialised.
-    /// * [`Error::Unauthorized`]     – caller is not the admin.
-    /// * [`Error::InvalidThreshold`] – `threshold` ≤ 0.
-    /// * [`Error::InvalidCampaignName`] – `name` is empty.
-    pub fn create_campaign(
-        env: Env,
-        name: String,
-        threshold: i128,
-        organiser: Address,
-    ) -> Result<u64, Error> {
-        let admin = Self::require_admin(&env)?;
-        admin.require_auth();
-
-        if threshold <= 0 {
-            return Err(Error::InvalidThreshold);
-        }
-        if name.len() == 0 {
-            return Err(Error::InvalidCampaignName);
-        }
-
-        let campaign_id = Self::next_campaign_id(&env);
-
-        let campaign = Campaign {
-            id: campaign_id,
-            name: name.clone(),
-            threshold,
-            organiser: organiser.clone(),
-            active: true,
-        };
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Campaign(campaign_id), &campaign);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Campaign(campaign_id), LEDGER_THRESHOLD, LEDGER_BUMP);
-        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-
-        env.events().publish(
-            (Symbol::new(&env, "CampaignCreated"), campaign_id),
-            CampaignCreatedEvent {
-                campaign_id,
-                name,
-                threshold,
-                organiser,
-            },
-        );
-
-        Ok(campaign_id)
-    }
-
-    /// Deactivate a campaign so no further contributions or mints are accepted.
-    ///
-    /// Admin only.
-    ///
-    /// # Errors
-    /// * [`Error::Unauthorized`]    – caller is not the admin.
-    /// * [`Error::CampaignNotFound`] – `campaign_id` does not exist.
-    pub fn deactivate_campaign(env: Env, campaign_id: u64) -> Result<(), Error> {
-        let admin = Self::require_admin(&env)?;
-        admin.require_auth();
-
-        let mut campaign: Campaign = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Campaign(campaign_id))
-            .ok_or(Error::CampaignNotFound)?;
-
-        campaign.active = false;
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Campaign(campaign_id), &campaign);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Campaign(campaign_id), LEDGER_THRESHOLD, LEDGER_BUMP);
-
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // Contribution tracking
-    // -----------------------------------------------------------------------
-
-    /// Record a backer's contribution toward a campaign milestone.
-    ///
-    /// Must be called by the campaign `organiser` (or the admin).  This
-    /// function does **not** move tokens — it purely tracks contribution
-    /// credit so that soulbound badges can be minted once the threshold is met.
-    ///
-    /// # Arguments
-    /// * `campaign_id`  – Target campaign.
-    /// * `backer`       – Wallet address of the contributor.
-    /// * `amount`       – Contribution amount (must be > 0).
-    ///
-    /// # Errors
-    /// * [`Error::Unauthorized`]       – caller is not the organiser or admin.
-    /// * [`Error::CampaignNotFound`]   – campaign does not exist.
-    /// * [`Error::ThresholdNotMet`]    – (not raised here; relevant to mint).
-    /// * [`Error::InvalidContribution`] – `amount` ≤ 0.
-    pub fn record_contribution(
-        env: Env,
-        campaign_id: u64,
-        backer: Address,
-        amount: i128,
-    ) -> Result<i128, Error> {
-        let campaign: Campaign = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Campaign(campaign_id))
-            .ok_or(Error::CampaignNotFound)?;
-
-        // Only the campaign organiser or admin may record contributions.
-        // We require auth from the organiser; if the call is made by the
-        // admin they must also provide organiser-level auth (or mock it in
-        // tests).  This keeps the auth model simple and auditable.
-        campaign.organiser.require_auth();
-
+    /// * `Error::NotInitialized` - If contract is not initialized
+    /// * `Error::InvalidAmount` - If amount is not positive
+    /// * `Error::InvalidToken` - If token is not the accepted token
+    /// * `Error::ArithmeticOverflow` - If arithmetic operation overflows
+    pub fn record_contribution(env: Env, contributor: Address, amount: i128) -> Vec<u64> {
+        // Ensure contract is initialized
+        let _accepted_token: Address = env.storage().instance()
+            .get(&DataKey::AcceptedToken)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        
+        contributor.require_auth();
+        
         if amount <= 0 {
-            return Err(Error::InvalidContribution);
+            panic_with_error!(&env, Error::InvalidAmount);
         }
-        if !campaign.active {
-            return Err(Error::CampaignInactive);
-        }
-
-        let key = DataKey::Contribution(campaign_id, backer.clone());
-        let mut record: ContributionRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(ContributionRecord {
-                campaign_id,
-                backer: backer.clone(),
-                total: 0,
+        
+        // Get or create user contribution record
+        let mut user_contribution: UserContribution = env.storage().persistent()
+            .get(&DataKey::UserContribution(contributor.clone()))
+            .unwrap_or(UserContribution {
+                total_contributed: 0,
+                badges_minted: Vec::new(&env),
+                last_updated: 0,
             });
-
-        record.total = record
-            .total
+        
+        // Update total contribution
+        user_contribution.total_contributed = user_contribution.total_contributed
             .checked_add(amount)
-            .ok_or(Error::InvalidContribution)?;
-
-        env.storage().persistent().set(&key, &record);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
-
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+        
+        user_contribution.last_updated = env.ledger().timestamp();
+        
+        // Check for new milestone achievements
+        let new_badges = Self::check_and_mint_badges(
+            env.clone(),
+            contributor.clone(),
+            user_contribution.total_contributed,
+            &user_contribution.badges_minted,
+        );
+        
+        // Update user contribution record
+        env.storage().persistent().set(
+            &DataKey::UserContribution(contributor.clone()),
+            &user_contribution,
+        );
+        env.storage().persistent()
+            .extend_ttl(&DataKey::UserContribution(contributor.clone()), LEDGER_THRESHOLD, LEDGER_BUMP);
+        
+        // Emit contribution recorded event
         env.events().publish(
-            (Symbol::new(&env, "ContributionRecorded"), campaign_id),
+            (Symbol::new(&env, "contribution_recorded"),),
             ContributionRecordedEvent {
-                campaign_id,
-                backer: backer.clone(),
+                contributor: contributor.clone(),
                 amount,
-                new_total: record.total,
+                total_contributed: user_contribution.total_contributed,
+                timestamp: env.ledger().timestamp(),
             },
         );
-
-        Ok(record.total)
+        
+        new_badges
     }
 
-    // -----------------------------------------------------------------------
-    // Badge minting
-    // -----------------------------------------------------------------------
-
-    /// Mint a soulbound badge for a backer who has met the campaign threshold.
-    ///
-    /// Can be called by:
-    /// - The **admin** (permissioned auto-mint).
-    /// - The **backer themselves** (self-claim once threshold is met).
-    ///
-    /// Badges are permanently bound to the backer's address.  No transfer
-    /// function exists.  Attempting to call this a second time for the same
-    /// (campaign, backer) pair returns [`Error::BadgeAlreadyMinted`].
-    ///
+    /// Get the threshold value for a given milestone level
+    /// 
     /// # Arguments
-    /// * `campaign_id` – Campaign to award the badge for.
-    /// * `backer`      – Recipient of the badge.
-    ///
+    /// * `milestone` - The milestone level
+    /// 
     /// # Returns
-    /// The newly assigned `badge_id`.
-    ///
+    /// The threshold amount for the milestone
+    /// 
     /// # Errors
-    /// * [`Error::CampaignNotFound`]  – campaign does not exist.
-    /// * [`Error::BadgeAlreadyMinted`] – backer already holds a badge for this campaign.
-    /// * [`Error::ThresholdNotMet`]   – backer's contribution is below the threshold.
-    /// * [`Error::Unauthorized`]      – caller is neither admin nor the backer.
-    pub fn mint_badge(env: Env, campaign_id: u64, backer: Address) -> Result<u64, Error> {
-        let campaign: Campaign = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Campaign(campaign_id))
-            .ok_or(Error::CampaignNotFound)?;
-
-        // Auth: admin or the backer themselves may trigger the mint.
-        // We use require_auth on the backer; the admin may also call by
-        // providing their own auth and the backer's address.  In tests
-        // mock_all_auths() covers both paths.
-        backer.require_auth();
-
-        // Idempotency guard — one badge per (campaign, backer)
-        let badge_owner_key = DataKey::BadgeOwner(campaign_id, backer.clone());
-        if env.storage().persistent().has(&badge_owner_key) {
-            return Err(Error::BadgeAlreadyMinted);
+    /// * `Error::InvalidMilestone` - If milestone is invalid
+    pub fn get_milestone_threshold(milestone: MilestoneLevel) -> i128 {
+        match milestone {
+            MilestoneLevel::Bronze => BRONZE_THRESHOLD,
+            MilestoneLevel::Silver => SILVER_THRESHOLD,
+            MilestoneLevel::Gold => GOLD_THRESHOLD,
+            MilestoneLevel::Platinum => PLATINUM_THRESHOLD,
+            MilestoneLevel::Diamond => DIAMOND_THRESHOLD,
         }
+    }
 
-        // Threshold check
-        let contribution_key = DataKey::Contribution(campaign_id, backer.clone());
-        let record: ContributionRecord = env
-            .storage()
-            .persistent()
-            .get(&contribution_key)
-            .unwrap_or(ContributionRecord {
-                campaign_id,
-                backer: backer.clone(),
-                total: 0,
+    /// Check if a user is eligible for a badge at a given milestone
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor address
+    /// * `milestone` - The milestone level to check
+    /// 
+    /// # Returns
+    /// true if eligible, false otherwise
+    pub fn is_eligible_for_badge(env: Env, contributor: Address, milestone: MilestoneLevel) -> bool {
+        let user_contribution: UserContribution = env.storage().persistent()
+            .get(&DataKey::UserContribution(contributor.clone()))
+            .unwrap_or(UserContribution {
+                total_contributed: 0,
+                badges_minted: Vec::new(&env),
+                last_updated: 0,
             });
-
-        if record.total < campaign.threshold {
-            return Err(Error::ThresholdNotMet);
+        
+        let threshold = Self::get_milestone_threshold(milestone);
+        let mut has_badge = false;
+        for i in 0..user_contribution.badges_minted.len() {
+            if user_contribution.badges_minted.get(i).unwrap() == milestone {
+                has_badge = true;
+                break;
+            }
         }
+        
+        user_contribution.total_contributed >= threshold && !has_badge
+    }
 
-        let badge_id = Self::next_badge_id(&env);
-        let minted_at = env.ledger().timestamp();
+    /// Get all badges owned by a user
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `owner` - The owner address
+    /// 
+    /// # Returns
+    /// Vector of badge IDs owned by the user
+    pub fn get_user_badges(env: Env, owner: Address) -> Vec<u64> {
+        env.storage().persistent()
+            .get(&DataKey::UserBadges(owner))
+            .unwrap_or(Vec::new(&env))
+    }
 
-        let badge = SoulboundBadge {
-            id: badge_id,
-            campaign_id,
-            owner: backer.clone(),
-            contribution_at_mint: record.total,
-            minted_at,
-        };
+    /// Get badge details by ID
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `badge_id` - The badge ID
+    /// 
+    /// # Returns
+    /// The badge data
+    /// 
+    /// # Errors
+    /// * `Error::BadgeNotFound` - If badge does not exist
+    pub fn get_badge(env: Env, badge_id: u64) -> Badge {
+        env.storage().persistent()
+            .get(&DataKey::Badge(badge_id))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::BadgeNotFound))
+    }
 
-        // Persist badge
-        env.storage()
-            .persistent()
-            .set(&DataKey::Badge(badge_id), &badge);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Badge(badge_id), LEDGER_THRESHOLD, LEDGER_BUMP);
+    /// Get user contribution details
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor address
+    /// 
+    /// # Returns
+    /// The user contribution data
+    pub fn get_user_contribution(env: Env, contributor: Address) -> UserContribution {
+        env.storage().persistent()
+            .get(&DataKey::UserContribution(contributor))
+            .unwrap_or(UserContribution {
+                total_contributed: 0,
+                badges_minted: Vec::new(&env),
+                last_updated: 0,
+            })
+    }
 
-        // Mark (campaign, backer) as having received a badge
-        env.storage()
-            .persistent()
-            .set(&badge_owner_key, &badge_id);
-        env.storage()
-            .persistent()
-            .extend_ttl(&badge_owner_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    /// Get the accepted token address
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// 
+    /// # Returns
+    /// The accepted token address
+    /// 
+    /// # Errors
+    /// * `Error::NotInitialized` - If contract is not initialized
+    pub fn get_accepted_token(env: Env) -> Address {
+        env.storage().instance()
+            .get(&DataKey::AcceptedToken)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+    }
 
+    /// Check and mint badges for newly achieved milestones
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor address
+    /// * `total_contributed` - Total contribution amount
+    /// * `badges_minted` - Vector of already minted badge levels
+    /// 
+    /// # Returns
+    /// Vector of newly minted badge IDs
+    fn check_and_mint_badges(
+        env: Env,
+        contributor: Address,
+        total_contributed: i128,
+        badges_minted: &Vec<MilestoneLevel>,
+    ) -> Vec<u64> {
+        let mut new_badge_ids = Vec::new(&env);
+        
+        let milestones = [
+            (MilestoneLevel::Bronze, BRONZE_THRESHOLD),
+            (MilestoneLevel::Silver, SILVER_THRESHOLD),
+            (MilestoneLevel::Gold, GOLD_THRESHOLD),
+            (MilestoneLevel::Platinum, PLATINUM_THRESHOLD),
+            (MilestoneLevel::Diamond, DIAMOND_THRESHOLD),
+        ];
+        
+        for (milestone, threshold) in milestones.iter() {
+            if total_contributed >= *threshold {
+                let mut has_badge = false;
+                for i in 0..badges_minted.len() {
+                    if badges_minted.get(i).unwrap() == *milestone {
+                        has_badge = true;
+                        break;
+                    }
+                }
+                
+                if !has_badge {
+                    let badge_id = Self::mint_badge(
+                        env.clone(),
+                        contributor.clone(),
+                        *milestone,
+                        total_contributed,
+                    );
+                    new_badge_ids.push_back(badge_id);
+                }
+            }
+        }
+        
+        new_badge_ids
+    }
+
+    /// Mint a new badge for a contributor
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor address
+    /// * `milestone_level` - The milestone level achieved
+    /// * `total_contributed` - Total contribution amount
+    /// 
+    /// # Returns
+    /// The newly minted badge ID
+    fn mint_badge(
+        env: Env,
+        contributor: Address,
+        milestone_level: MilestoneLevel,
+        total_contributed: i128,
+    ) -> u64 {
+        // Get and increment badge counter
+        let badge_counter: u64 = env.storage().instance()
+            .get(&DataKey::BadgeCounter)
+            .unwrap_or(0);
+        let badge_id = badge_counter + 1;
+        env.storage().instance().set(&DataKey::BadgeCounter, &badge_id);
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-
+        
+        // Create badge
+        let badge = Badge {
+            badge_id,
+            owner: contributor.clone(),
+            milestone_level,
+            total_contributed,
+            minted_at: env.ledger().timestamp(),
+        };
+        
+        // Store badge
+        env.storage().persistent().set(&DataKey::Badge(badge_id), &badge);
+        env.storage().persistent()
+            .extend_ttl(&DataKey::Badge(badge_id), LEDGER_THRESHOLD, LEDGER_BUMP);
+        
+        // Update user badges list
+        let mut user_badges: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::UserBadges(contributor.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_badges.push_back(badge_id);
+        env.storage().persistent()
+            .set(&DataKey::UserBadges(contributor.clone()), &user_badges);
+        env.storage().persistent()
+            .extend_ttl(&DataKey::UserBadges(contributor.clone()), LEDGER_THRESHOLD, LEDGER_BUMP);
+        
+        // Update user contribution record to include new badge
+        let mut user_contribution: UserContribution = env.storage().persistent()
+            .get(&DataKey::UserContribution(contributor.clone()))
+            .unwrap_or(UserContribution {
+                total_contributed,
+                badges_minted: Vec::new(&env),
+                last_updated: env.ledger().timestamp(),
+            });
+        user_contribution.badges_minted.push_back(milestone_level);
+        env.storage().persistent()
+            .set(&DataKey::UserContribution(contributor.clone()), &user_contribution);
+        env.storage().persistent()
+            .extend_ttl(&DataKey::UserContribution(contributor.clone()), LEDGER_THRESHOLD, LEDGER_BUMP);
+        
+        // Emit badge minted event
         env.events().publish(
-            (Symbol::new(&env, "BadgeMinted"), badge_id),
+            (Symbol::new(&env, "badge_minted"),),
             BadgeMintedEvent {
                 badge_id,
-                campaign_id,
-                owner: backer.clone(),
-                contribution_at_mint: record.total,
-                minted_at,
+                owner: contributor.clone(),
+                milestone_level,
+                total_contributed,
+                timestamp: env.ledger().timestamp(),
             },
         );
-
-        Ok(badge_id)
-    }
-
-    // -----------------------------------------------------------------------
-    // Read-only queries
-    // -----------------------------------------------------------------------
-
-    /// Fetch a campaign by ID.
-    ///
-    /// # Errors
-    /// * [`Error::CampaignNotFound`] – no campaign with the given ID.
-    pub fn get_campaign(env: Env, campaign_id: u64) -> Result<Campaign, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Campaign(campaign_id))
-            .ok_or(Error::CampaignNotFound)
-    }
-
-    /// Fetch a badge by ID.
-    ///
-    /// # Errors
-    /// * [`Error::BadgeNotFound`] – no badge with the given ID.
-    pub fn get_badge(env: Env, badge_id: u64) -> Result<SoulboundBadge, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Badge(badge_id))
-            .ok_or(Error::BadgeNotFound)
-    }
-
-    /// Return the badge ID held by `backer` for `campaign_id`, if any.
-    pub fn get_badge_for_backer(env: Env, campaign_id: u64, backer: Address) -> Option<u64> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::BadgeOwner(campaign_id, backer))
-    }
-
-    /// Return `backer`'s cumulative contribution total for `campaign_id`.
-    pub fn get_contribution(env: Env, campaign_id: u64, backer: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Contribution(campaign_id, backer))
-            .map(|r: ContributionRecord| r.total)
-            .unwrap_or(0)
-    }
-
-    /// Check whether `backer` qualifies for a badge on `campaign_id`.
-    ///
-    /// Returns `true` if the backer's contribution meets or exceeds the
-    /// threshold and they have not yet been minted a badge.
-    pub fn is_eligible(env: Env, campaign_id: u64, backer: Address) -> bool {
-        let campaign: Campaign = match env
-            .storage()
-            .persistent()
-            .get(&DataKey::Campaign(campaign_id))
-        {
-            Some(c) => c,
-            None => return false,
-        };
-
-        // Already minted → not eligible again
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::BadgeOwner(campaign_id, backer.clone()))
-        {
-            return false;
-        }
-
-        let total: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Contribution(campaign_id, backer))
-            .map(|r: ContributionRecord| r.total)
-            .unwrap_or(0);
-
-        total >= campaign.threshold
-    }
-
-    /// Return the total number of badges minted across all campaigns.
-    pub fn total_badges(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::BadgeCounter)
-            .unwrap_or(0)
-    }
-
-    /// Return the total number of campaigns created.
-    pub fn total_campaigns(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::CampaignCounter)
-            .unwrap_or(0)
-    }
-
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
-    /// Load and return the admin address, or `Err(NotInitialized)`.
-    fn require_admin(env: &Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
-    }
-
-    /// Atomically increment and return the next campaign ID.
-    fn next_campaign_id(env: &Env) -> u64 {
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::CampaignCounter)
-            .unwrap_or(0)
-            + 1;
-        env.storage().instance().set(&DataKey::CampaignCounter, &id);
-        id
-    }
-
-    /// Atomically increment and return the next badge ID.
-    fn next_badge_id(env: &Env) -> u64 {
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::BadgeCounter)
-            .unwrap_or(0)
-            + 1;
-        env.storage().instance().set(&DataKey::BadgeCounter, &id);
-        id
+        
+        badge_id
     }
 }
 
-mod test;
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+    #[test]
+    fn test_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        let stored_token = client.get_accepted_token();
+        assert_eq!(stored_token, token);
+    }
+
+    #[test]
+    #[should_panic(expected = "AlreadyInitialized")]
+    fn test_re_initialize_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+        client.initialize(&admin, &token);
+    }
+
+    #[test]
+    fn test_get_milestone_thresholds() {
+        assert_eq!(SoulboundBadgeContract::get_milestone_threshold(MilestoneLevel::Bronze), 1_000);
+        assert_eq!(SoulboundBadgeContract::get_milestone_threshold(MilestoneLevel::Silver), 10_000);
+        assert_eq!(SoulboundBadgeContract::get_milestone_threshold(MilestoneLevel::Gold), 100_000);
+        assert_eq!(SoulboundBadgeContract::get_milestone_threshold(MilestoneLevel::Platinum), 1_000_000);
+        assert_eq!(SoulboundBadgeContract::get_milestone_threshold(MilestoneLevel::Diamond), 10_000_000);
+    }
+
+    #[test]
+    fn test_record_contribution_bronze_badge() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        // Contribute exactly bronze threshold
+        let new_badges = client.record_contribution(&contributor, &1_000);
+
+        assert_eq!(new_badges.len(), 1);
+        
+        let badge_id = new_badges.get(0).unwrap();
+        let badge = client.get_badge(&badge_id);
+        assert_eq!(badge.owner, contributor);
+        assert_eq!(badge.milestone_level, MilestoneLevel::Bronze);
+        assert_eq!(badge.total_contributed, 1_000);
+    }
+
+    #[test]
+    fn test_record_contribution_multiple_badges() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        // Contribute enough for gold badge
+        let new_badges = client.record_contribution(&contributor, &100_000);
+
+        assert_eq!(new_badges.len(), 3); // Bronze, Silver, Gold
+        
+        let user_badges = client.get_user_badges(&contributor);
+        assert_eq!(user_badges.len(), 3);
+    }
+
+    #[test]
+    fn test_record_contribution_no_duplicate_badges() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        // First contribution - bronze badge
+        let new_badges1 = client.record_contribution(&contributor, &1_000);
+        assert_eq!(new_badges1.len(), 1);
+
+        // Second contribution - still only bronze badge (no duplicate)
+        let new_badges2 = client.record_contribution(&contributor, &500);
+        assert_eq!(new_badges2.len(), 0);
+    }
+
+    #[test]
+    fn test_record_contribution_progressive_badges() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        // First contribution - bronze
+        let badges1 = client.record_contribution(&contributor, &1_000);
+        assert_eq!(badges1.len(), 1);
+
+        // Second contribution - reach silver
+        let badges2 = client.record_contribution(&contributor, &9_000);
+        assert_eq!(badges2.len(), 1); // Only silver
+
+        let user_badges = client.get_user_badges(&contributor);
+        assert_eq!(user_badges.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidAmount")]
+    fn test_record_contribution_zero_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+        client.record_contribution(&contributor, &0);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidAmount")]
+    fn test_record_contribution_negative_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+        client.record_contribution(&contributor, &-100);
+    }
+
+    #[test]
+    fn test_get_user_contribution() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        let contribution = client.record_contribution(&contributor, &5_000);
+        
+        let user_contribution = client.get_user_contribution(&contributor);
+        assert_eq!(user_contribution.total_contributed, 5_000);
+        assert_eq!(user_contribution.badges_minted.len(), 1);
+    }
+
+    #[test]
+    fn test_get_user_badges() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        client.record_contribution(&contributor, &10_000);
+        
+        let user_badges = client.get_user_badges(&contributor);
+        assert_eq!(user_badges.len(), 2); // Bronze and Silver
+    }
+
+    #[test]
+    fn test_is_eligible_for_badge() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        // Before contribution
+        assert!(!client.is_eligible_for_badge(&contributor, MilestoneLevel::Bronze));
+
+        // After contribution
+        client.record_contribution(&contributor, &1_000);
+        
+        // Now has badge, so not eligible for same badge
+        assert!(!client.is_eligible_for_badge(&contributor, MilestoneLevel::Bronze));
+        
+        // But eligible for next level
+        assert!(!client.is_eligible_for_badge(&contributor, MilestoneLevel::Silver));
+    }
+
+    #[test]
+    fn test_get_badge() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        let new_badges = client.record_contribution(&contributor, &1_000);
+        let badge_id = new_badges.get(0).unwrap();
+        
+        let badge = client.get_badge(&badge_id);
+        assert_eq!(badge.badge_id, badge_id);
+        assert_eq!(badge.owner, contributor);
+        assert_eq!(badge.milestone_level, MilestoneLevel::Bronze);
+    }
+
+    #[test]
+    #[should_panic(expected = "BadgeNotFound")]
+    fn test_get_badge_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+        client.get_badge(&999);
+    }
+
+    #[test]
+    fn test_all_milestone_levels() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        // Contribute enough for diamond badge
+        let new_badges = client.record_contribution(&contributor, &10_000_000);
+        
+        assert_eq!(new_badges.len(), 5); // All 5 milestone levels
+        
+        let user_badges = client.get_user_badges(&contributor);
+        assert_eq!(user_badges.len(), 5);
+    }
+
+    #[test]
+    fn test_multiple_users() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor1 = Address::generate(&env);
+        let contributor2 = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        client.record_contribution(&contributor1, &5_000);
+        client.record_contribution(&contributor2, &15_000);
+
+        let badges1 = client.get_user_badges(&contributor1);
+        let badges2 = client.get_user_badges(&contributor2);
+
+        assert_eq!(badges1.len(), 1); // Bronze only
+        assert_eq!(badges2.len(), 2); // Bronze and Silver
+    }
+
+    #[test]
+    fn test_badge_data_integrity() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        env.ledger().set(LedgerInfo {
+            timestamp: 12345,
+            protocol_version: env.ledger().protocol_version(),
+            sequence_number: 10,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 16,
+            max_entry_ttl: 6312000,
+        });
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        let new_badges = client.record_contribution(&contributor, &1_000);
+        let badge_id = new_badges.get(0).unwrap();
+        
+        let badge = client.get_badge(&badge_id);
+        assert_eq!(badge.minted_at, 12345);
+        assert_eq!(badge.total_contributed, 1_000);
+    }
+}
