@@ -33,7 +33,7 @@ pub enum StreamStatus {
 
 /// Stream data structure
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Stream {
     pub id: u64,
     pub sender: Address,
@@ -368,8 +368,7 @@ impl PaymentStreamContract {
             None => panic_with_error!(&env, Error::SwapProviderNotSet),
         };
 
-        let pre_swap_status = stream.status;
-        let pre_swap_balance = stream.balance;
+        let pre_swap_stream = stream.clone();
 
         // Escrow the source asset from the sender directly to the swap
         // provider, which will perform the conversion.
@@ -389,21 +388,24 @@ impl PaymentStreamContract {
             &contract_address,
         );
 
+        // Re-read the stream immediately after the external swap-provider
+        // call and before deriving amount_out: if the provider reentered
+        // this contract (e.g. via withdraw, cancel_stream, pause_stream, or
+        // another deposit on the same stream_id), the full snapshot we
+        // captured before the call is stale. Reject rather than risk
+        // undercounting the swap output or blindly overwriting the
+        // reentrant state.
+        let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
+        if stream != pre_swap_stream {
+            panic_with_error!(&env, Error::ReentrantStateChange);
+        }
+
         let balance_after = dest_client.balance(&contract_address);
         let amount_out = balance_after.checked_sub(balance_before)
             .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
 
         if amount_out < min_amount_out {
             panic_with_error!(&env, Error::SlippageExceeded);
-        }
-
-        // Re-read the stream after the external swap-provider call: if the
-        // provider reentered this contract (e.g. via withdraw, cancel_stream,
-        // or another deposit on the same stream_id), the state we captured
-        // before the call is stale. Reject rather than blindly overwrite it.
-        let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
-        if stream.status != pre_swap_status || stream.balance != pre_swap_balance {
-            panic_with_error!(&env, Error::ReentrantStateChange);
         }
 
         let new_balance = stream.balance.checked_add(amount_out)

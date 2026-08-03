@@ -3,7 +3,7 @@ mod test {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke};
     use soroban_sdk::{token, Address, Env, IntoVal};
-    use crate::{PaymentStreamContract, PaymentStreamContractClient, StreamStatus};
+    use crate::{Error, PaymentStreamContract, PaymentStreamContractClient, StreamStatus};
 
 
     
@@ -2120,10 +2120,25 @@ fn test_deposit_with_swap_slippage_exceeded_by_contract_check() {
         &100,
     );
 
+    let source_token_client = token::Client::new(&env, &source_token);
+    let dest_token_client = token::Client::new(&env, &dest_token);
+    let sender_balance_before = source_token_client.balance(&sender);
+    let contract_balance_before = dest_token_client.balance(&contract_id);
+    let stream_balance_before = client.get_stream(&stream_id).balance;
+
     // The mock will deliver 499 (500 - 1) which is below min_amount_out,
     // but won't panic itself, so the contract's own post-swap check must catch it.
     let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &500);
-    assert!(result.is_err());
+    match result {
+        Err(Ok(err)) => assert_eq!(err, Error::SlippageExceeded.into()),
+        other => panic!("expected Error::SlippageExceeded, got {:?}", other),
+    }
+
+    // A panicking call is fully rolled back: the source transfer to the swap
+    // provider and the stream's balance must be unchanged.
+    assert_eq!(source_token_client.balance(&sender), sender_balance_before);
+    assert_eq!(dest_token_client.balance(&contract_id), contract_balance_before);
+    assert_eq!(client.get_stream(&stream_id).balance, stream_balance_before);
 }
 
 #[test]
