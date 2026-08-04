@@ -1,5 +1,9 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env};
+#![allow(deprecated)]
+use soroban_sdk::{
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error, token,
+    Address, Env, Vec,
+};
 
 /// Persistent/instance storage keys.
 ///
@@ -18,6 +22,10 @@ pub enum DataKey {
     Stream(u64),
     Metrics(u64),
     Delegate(u64),
+    /// Global emergency-pause circuit breaker flag (instance storage).
+    Paused,
+    /// Configured DEX router address used by `deposit_with_swap` (instance storage).
+    DexRouter,
 }
 
 /// Stream status enum
@@ -42,10 +50,27 @@ pub struct Stream {
     pub balance: i128,
     pub withdrawn_amount: i128,
     pub start_time: u64,
+    /// Number of seconds after `start_time` during which nothing is
+    /// withdrawable (linear lockup). `0` means no cliff.
+    pub cliff_duration: u64,
     pub end_time: u64,
     pub status: StreamStatus,
     pub paused_at: Option<u64>,  
     pub total_paused_duration: u64,
+}
+
+/// Per-recipient parameters for `create_batch_streams`.
+#[contracttype]
+#[derive(Clone)]
+pub struct StreamParams {
+    pub recipient: Address,
+    pub token: Address,
+    pub total_amount: i128,
+    pub initial_amount: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    /// Seconds after `start_time` during which nothing is withdrawable.
+    pub cliff_duration: u64,
 }
 
 /// Per-stream metrics tracking
@@ -178,12 +203,40 @@ pub enum Error {
     AlreadyPaused = 18,
     /// Contract is not currently paused
     NotPaused = 19,
+    /// Swap path is invalid for cross-asset deposits (from_token == stream.token)
+    InvalidSwapPath = 20,
+    /// DEX returned fewer tokens than the caller's minimum (slippage guard)
+    SlippageExceeded = 21,
+    /// Internal failure while swapping for a deposit
+    SwapFailed = 22,
+    /// Cliff period is not shorter than the total vesting duration
+    InvalidCliff = 23,
+    /// Batch contains more than the maximum number of streams (50)
+    BatchLimitExceeded = 24,
+    /// Batch contains no recipients
+    EmptyBatch = 25,
 }
 
 // Constants
 const MAX_FEE: u32 = 500; // 5% in basis points
+const MAX_STREAMS_PER_BATCH: u32 = 50; // max streams per create_batch_streams call
 const LEDGER_THRESHOLD: u32 = 518400; // ~30 days at 5s/ledger
 const LEDGER_BUMP: u32 = 535680; // ~31 days
+
+/// Client for the external DEX router contract used by `deposit_with_swap`.
+///
+/// The router must expose `swap_exact_tokens_for_tokens`, returning the
+/// amounts actually received per hop of the swap path.
+#[contractclient(name = "DexRouterClient")]
+pub trait DexRouter {
+    fn swap_exact_tokens_for_tokens(
+        env: Env,
+        amount_in: i128,
+        min_amount_out: i128,
+        path: Vec<Address>,
+        to: Address,
+    ) -> Vec<i128>;
+}
 
 #[contract]
 pub struct PaymentStreamContract;
@@ -225,11 +278,7 @@ impl PaymentStreamContract {
     /// pause flag is active.  Call this at the top of every state-mutating
     /// entry point that should be halted during an incident.
     fn assert_not_paused(env: &Env) {
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&Symbol::new(env, "paused"))
-            .unwrap_or(false);
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
         if paused {
             panic_with_error!(env, Error::ContractPaused);
         }
@@ -251,22 +300,16 @@ impl PaymentStreamContract {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "admin"))
+            .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         admin.require_auth();
 
-        let already_paused: bool = env
-            .storage()
-            .instance()
-            .get(&Symbol::new(&env, "paused"))
-            .unwrap_or(false);
+        let already_paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
         if already_paused {
             panic_with_error!(&env, Error::AlreadyPaused);
         }
 
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, "paused"), &true);
+        env.storage().instance().set(&DataKey::Paused, &true);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -293,22 +336,16 @@ impl PaymentStreamContract {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "admin"))
+            .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         admin.require_auth();
 
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&Symbol::new(&env, "paused"))
-            .unwrap_or(false);
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
         if !paused {
             panic_with_error!(&env, Error::NotPaused);
         }
 
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, "paused"), &false);
+        env.storage().instance().set(&DataKey::Paused, &false);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -325,17 +362,23 @@ impl PaymentStreamContract {
 
     /// Returns `true` when the global emergency pause is active.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&Symbol::new(&env, "paused"))
-            .unwrap_or(false)
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
     }
 
     // -----------------------------------------------------------------------
     // Core stream operations
     // -----------------------------------------------------------------------
 
-    /// Create a new payment stream
+    /// Create a new payment stream (no cliff period).
+    ///
+    /// See [`create_stream_with_cliff`](Self::create_stream_with_cliff) for a
+    /// variant that adds an initial linear lockup period.
+    ///
+    /// # Authorization
+    /// Requires the `sender` address to sign the call.
+    ///
+    /// # Returns
+    /// The unique `u64` ID of the newly created stream.
     pub fn create_stream(
         env: Env,
         sender: Address,
@@ -346,9 +389,182 @@ impl PaymentStreamContract {
         start_time: u64,
         end_time: u64,
     ) -> u64 {
-        Self::assert_not_paused(&env);
         sender.require_auth();
-        Self::require_not_paused(&env);
+        Self::create_stream_internal(
+            env,
+            sender,
+            recipient,
+            token,
+            total_amount,
+            initial_amount,
+            start_time,
+            end_time,
+            0,
+        )
+    }
+
+    /// Create a new payment stream with a linear cliff (lockup) period.
+    ///
+    /// Nothing is withdrawable during the first `cliff_duration` seconds after
+    /// `start_time`. Once the cliff has elapsed, tokens vest linearly across
+    /// the whole `[start_time, end_time]` window, so the pro-rata share accrued
+    /// during the cliff becomes claimable immediately at the cliff boundary.
+    ///
+    /// # Arguments
+    /// * `sender` - Address funding the stream.
+    /// * `recipient` - Address that will receive the funds.
+    /// * `token` - Token contract being streamed.
+    /// * `total_amount` - Total amount to be streamed.
+    /// * `initial_amount` - Amount transferred into escrow on creation.
+    /// * `start_time` - Ledger timestamp when vesting begins.
+    /// * `end_time` - Ledger timestamp when vesting completes.
+    /// * `cliff_duration` - Seconds after `start_time` during which nothing is withdrawable.
+    ///
+    /// # Authorization
+    /// Requires the `sender` address to sign the call.
+    ///
+    /// # Errors
+    /// - `Error::InvalidAmount` - `total_amount <= 0` or `initial_amount` out of range.
+    /// - `Error::InvalidTimeRange` - `end_time <= start_time`.
+    /// - `Error::InvalidCliff` - `cliff_duration >= end_time - start_time`.
+    /// - `Error::ContractPaused` - the emergency circuit breaker is active.
+    ///
+    /// # Returns
+    /// The unique `u64` ID of the newly created stream.
+    pub fn create_stream_with_cliff(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        total_amount: i128,
+        initial_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cliff_duration: u64,
+    ) -> u64 {
+        sender.require_auth();
+        Self::create_stream_internal(
+            env,
+            sender,
+            recipient,
+            token,
+            total_amount,
+            initial_amount,
+            start_time,
+            end_time,
+            cliff_duration,
+        )
+    }
+
+    /// Create up to [`MAX_STREAMS_PER_BATCH`] recipient streams in a single
+    /// invocation (batch payroll).
+    ///
+    /// Every recipient's parameters are validated up front so that a single
+    /// invalid entry fails the whole batch atomically — no partial streams are
+    /// created. The `sender` address is authenticated once for the entire
+    /// batch.
+    ///
+    /// # Arguments
+    /// * `sender` - Address funding and authorizing the entire batch.
+    /// * `params` - Per-recipient stream parameters (max `MAX_STREAMS_PER_BATCH` entries).
+    ///
+    /// # Authorization
+    /// Requires the `sender` address to sign the call.
+    ///
+    /// # Errors
+    /// - `Error::EmptyBatch` - `params` is empty.
+    /// - `Error::BatchLimitExceeded` - `params` exceeds `MAX_STREAMS_PER_BATCH` entries.
+    /// - `Error::InvalidAmount` - any entry has `total_amount <= 0` or an out-of-range `initial_amount`.
+    /// - `Error::InvalidTimeRange` - any entry has `end_time <= start_time`.
+    /// - `Error::InvalidCliff` - any entry has `cliff_duration >= end_time - start_time`.
+    /// - `Error::ContractPaused` - the emergency circuit breaker is active.
+    ///
+    /// # Returns
+    /// The stream IDs of the newly created streams, in batch order.
+    pub fn create_batch_streams(
+        env: Env,
+        sender: Address,
+        params: Vec<StreamParams>,
+    ) -> Vec<u64> {
+        Self::assert_not_paused(&env);
+        // The sender authorises the entire batch exactly once.
+        sender.require_auth();
+
+        let count = params.len();
+        if count == 0 {
+            panic_with_error!(&env, Error::EmptyBatch);
+        }
+        if count > MAX_STREAMS_PER_BATCH {
+            panic_with_error!(&env, Error::BatchLimitExceeded);
+        }
+
+        // Validate the entire batch before creating anything so a single bad
+        // entry reverts the whole call (no partial payroll streams).
+        for p in params.iter() {
+            Self::validate_stream_params(
+                &env,
+                p.total_amount,
+                p.initial_amount,
+                p.start_time,
+                p.end_time,
+                p.cliff_duration,
+            );
+        }
+
+        let mut ids: Vec<u64> = Vec::new(&env);
+        for p in params.iter() {
+            let id = Self::create_stream_internal(
+                env.clone(),
+                sender.clone(),
+                p.recipient.clone(),
+                p.token.clone(),
+                p.total_amount,
+                p.initial_amount,
+                p.start_time,
+                p.end_time,
+                p.cliff_duration,
+            );
+            ids.push_back(id);
+        }
+        ids
+    }
+
+    /// Validate a stream parameter set, panicking on any invalid input.
+    fn validate_stream_params(
+        env: &Env,
+        total_amount: i128,
+        initial_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cliff_duration: u64,
+    ) {
+        if total_amount <= 0 {
+            panic_with_error!(env, Error::InvalidAmount);
+        }
+        if initial_amount < 0 || initial_amount > total_amount {
+            panic_with_error!(env, Error::InvalidAmount);
+        }
+        if end_time <= start_time {
+            panic_with_error!(env, Error::InvalidTimeRange);
+        }
+        if cliff_duration >= end_time - start_time {
+            panic_with_error!(env, Error::InvalidCliff);
+        }
+    }
+
+    /// Shared implementation for stream creation.
+    fn create_stream_internal(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        total_amount: i128,
+        initial_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cliff_duration: u64,
+    ) -> u64 {
+        Self::assert_not_paused(&env);
 
         // Validate inputs
         if total_amount <= 0 {
@@ -359,6 +575,9 @@ impl PaymentStreamContract {
         }
         if end_time <= start_time {
             panic_with_error!(&env, Error::InvalidTimeRange);
+        }
+        if cliff_duration >= end_time - start_time {
+            panic_with_error!(&env, Error::InvalidCliff);
         }
 
         // Get and increment stream count
@@ -379,6 +598,7 @@ impl PaymentStreamContract {
             balance: initial_amount,
             withdrawn_amount: 0,
             start_time,
+            cliff_duration,
             end_time,
             status: StreamStatus::Active,
             paused_at: None,
@@ -438,7 +658,6 @@ impl PaymentStreamContract {
         }
 
         stream.sender.require_auth();
-        Self::require_not_paused(&env);
 
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -566,7 +785,7 @@ impl PaymentStreamContract {
         let dex_router: Address = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "dex_router"))
+            .get(&DataKey::DexRouter)
             .unwrap_or_else(|| panic_with_error!(&env, Error::SwapFailed));
 
         let router = DexRouterClient::new(&env, &dex_router);
@@ -603,23 +822,23 @@ impl PaymentStreamContract {
 
         // 10. Persist updated stream state
         stream.balance = new_balance;
-        env.storage().persistent().set(&stream_id, &stream);
-        env.storage().persistent().extend_ttl(&stream_id, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().set(&DataKey::Stream(stream_id), &stream);
+        env.storage().persistent().extend_ttl(&DataKey::Stream(stream_id), LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // 11. Update stream metrics
         let mut metrics: StreamMetrics = env
             .storage()
             .persistent()
-            .get(&(stream_id, Symbol::new(&env, "metrics")))
+            .get(&DataKey::Metrics(stream_id))
             .unwrap_or_else(|| Self::default_stream_metrics(&env));
 
         metrics.last_activity = env.ledger().timestamp();
 
         env.storage()
             .persistent()
-            .set(&(stream_id, Symbol::new(&env, "metrics")), &metrics);
+            .set(&DataKey::Metrics(stream_id), &metrics);
         env.storage().persistent().extend_ttl(
-            &(stream_id, Symbol::new(&env, "metrics")),
+            &DataKey::Metrics(stream_id),
             LEDGER_THRESHOLD,
             LEDGER_BUMP,
         );
@@ -655,13 +874,13 @@ impl PaymentStreamContract {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "admin"))
+            .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         admin.require_auth();
 
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, "dex_router"), &router);
+            .set(&DataKey::DexRouter, &router);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -671,7 +890,7 @@ impl PaymentStreamContract {
     pub fn get_dex_router(env: Env) -> Option<Address> {
         env.storage()
             .instance()
-            .get(&Symbol::new(&env, "dex_router"))
+            .get(&DataKey::DexRouter)
     }
 
     /// Get stream details
@@ -856,6 +1075,13 @@ impl PaymentStreamContract {
         // Subtract the total paused duration from elapsed time
         let elapsed = raw_elapsed.saturating_sub(stream.total_paused_duration);
 
+        // Cliff: nothing may be withdrawn until the lockup period has elapsed.
+        // Vesting resumes linearly over the full duration afterwards, so the
+        // pro-rata share accrued during the cliff is claimable at the boundary.
+        if elapsed < stream.cliff_duration {
+            return 0;
+        }
+
         let duration = (stream.end_time - stream.start_time).saturating_sub(stream.total_paused_duration);
         if duration == 0 {
             return 0;
@@ -872,7 +1098,6 @@ impl PaymentStreamContract {
         let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
 
         Self::assert_is_recipient_or_delegate(&env, stream_id);
-        Self::require_not_paused(&env);
 
         let available = Self::withdrawable_amount(env.clone(), stream_id);
         if amount > available || amount <= 0 {
