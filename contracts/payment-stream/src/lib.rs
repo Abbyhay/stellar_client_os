@@ -59,6 +59,20 @@ pub struct Stream {
     pub total_paused_duration: u64,
 }
 
+/// Per-recipient parameters for `create_batch_streams`.
+#[contracttype]
+#[derive(Clone)]
+pub struct StreamParams {
+    pub recipient: Address,
+    pub token: Address,
+    pub total_amount: i128,
+    pub initial_amount: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    /// Seconds after `start_time` during which nothing is withdrawable.
+    pub cliff_duration: u64,
+}
+
 /// Per-stream metrics tracking
 #[contracttype]
 #[derive(Clone)]
@@ -197,10 +211,15 @@ pub enum Error {
     SwapFailed = 22,
     /// Cliff period is not shorter than the total vesting duration
     InvalidCliff = 23,
+    /// Batch contains more than the maximum number of streams (50)
+    BatchLimitExceeded = 24,
+    /// Batch contains no recipients
+    EmptyBatch = 25,
 }
 
 // Constants
 const MAX_FEE: u32 = 500; // 5% in basis points
+const MAX_STREAMS_PER_BATCH: u32 = 50; // max streams per create_batch_streams call
 const LEDGER_THRESHOLD: u32 = 518400; // ~30 days at 5s/ledger
 const LEDGER_BUMP: u32 = 535680; // ~31 days
 
@@ -370,6 +389,7 @@ impl PaymentStreamContract {
         start_time: u64,
         end_time: u64,
     ) -> u64 {
+        sender.require_auth();
         Self::create_stream_internal(
             env,
             sender,
@@ -422,6 +442,7 @@ impl PaymentStreamContract {
         end_time: u64,
         cliff_duration: u64,
     ) -> u64 {
+        sender.require_auth();
         Self::create_stream_internal(
             env,
             sender,
@@ -433,6 +454,102 @@ impl PaymentStreamContract {
             end_time,
             cliff_duration,
         )
+    }
+
+    /// Create up to [`MAX_STREAMS_PER_BATCH`] recipient streams in a single
+    /// invocation (batch payroll).
+    ///
+    /// Every recipient's parameters are validated up front so that a single
+    /// invalid entry fails the whole batch atomically — no partial streams are
+    /// created. The `sender` address is authenticated once for the entire
+    /// batch.
+    ///
+    /// # Arguments
+    /// * `sender` - Address funding and authorizing the entire batch.
+    /// * `params` - Per-recipient stream parameters (max `MAX_STREAMS_PER_BATCH` entries).
+    ///
+    /// # Authorization
+    /// Requires the `sender` address to sign the call.
+    ///
+    /// # Errors
+    /// - `Error::EmptyBatch` - `params` is empty.
+    /// - `Error::BatchLimitExceeded` - `params` exceeds `MAX_STREAMS_PER_BATCH` entries.
+    /// - `Error::InvalidAmount` - any entry has `total_amount <= 0` or an out-of-range `initial_amount`.
+    /// - `Error::InvalidTimeRange` - any entry has `end_time <= start_time`.
+    /// - `Error::InvalidCliff` - any entry has `cliff_duration >= end_time - start_time`.
+    /// - `Error::ContractPaused` - the emergency circuit breaker is active.
+    ///
+    /// # Returns
+    /// The stream IDs of the newly created streams, in batch order.
+    pub fn create_batch_streams(
+        env: Env,
+        sender: Address,
+        params: Vec<StreamParams>,
+    ) -> Vec<u64> {
+        Self::assert_not_paused(&env);
+        // The sender authorises the entire batch exactly once.
+        sender.require_auth();
+
+        let count = params.len();
+        if count == 0 {
+            panic_with_error!(&env, Error::EmptyBatch);
+        }
+        if count > MAX_STREAMS_PER_BATCH {
+            panic_with_error!(&env, Error::BatchLimitExceeded);
+        }
+
+        // Validate the entire batch before creating anything so a single bad
+        // entry reverts the whole call (no partial payroll streams).
+        for p in params.iter() {
+            Self::validate_stream_params(
+                &env,
+                p.total_amount,
+                p.initial_amount,
+                p.start_time,
+                p.end_time,
+                p.cliff_duration,
+            );
+        }
+
+        let mut ids: Vec<u64> = Vec::new(&env);
+        for p in params.iter() {
+            let id = Self::create_stream_internal(
+                env.clone(),
+                sender.clone(),
+                p.recipient.clone(),
+                p.token.clone(),
+                p.total_amount,
+                p.initial_amount,
+                p.start_time,
+                p.end_time,
+                p.cliff_duration,
+            );
+            ids.push_back(id);
+        }
+        ids
+    }
+
+    /// Validate a stream parameter set, panicking on any invalid input.
+    fn validate_stream_params(
+        env: &Env,
+        total_amount: i128,
+        initial_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cliff_duration: u64,
+    ) {
+        if total_amount <= 0 {
+            panic_with_error!(env, Error::InvalidAmount);
+        }
+        if initial_amount < 0 || initial_amount > total_amount {
+            panic_with_error!(env, Error::InvalidAmount);
+        }
+        if end_time <= start_time {
+            panic_with_error!(env, Error::InvalidTimeRange);
+        }
+        if cliff_duration >= end_time - start_time {
+            panic_with_error!(env, Error::InvalidCliff);
+        }
     }
 
     /// Shared implementation for stream creation.
@@ -448,7 +565,6 @@ impl PaymentStreamContract {
         cliff_duration: u64,
     ) -> u64 {
         Self::assert_not_paused(&env);
-        sender.require_auth();
 
         // Validate inputs
         if total_amount <= 0 {
