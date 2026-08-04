@@ -12,10 +12,7 @@ const StreamCountdown = ({ endTime, status }: StreamCountdownProps) => {
     const normalizedStatus = status.toLowerCase();
 
     useEffect(() => {
-        if (normalizedStatus !== "active") {
-            setCurrentTime(Date.now());
-            return;
-        }
+        if (normalizedStatus !== "active") return;
 
         setCurrentTime(Date.now());
 
