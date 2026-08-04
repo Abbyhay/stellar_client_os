@@ -2,6 +2,22 @@
  * Stream validation utilities for payment stream forms
  */
 
+import { StrKey } from "@stellar/stellar-sdk";
+
+/**
+ * Validate that a string is a valid Stellar contract ID (StrKey C... format)
+ * @param contractId - The contract address to validate
+ * @returns true if the address is a valid contract StrKey, false otherwise
+ */
+export function validateContractId(contractId: string): boolean {
+  if (!contractId || typeof contractId !== "string") return false;
+  try {
+    return StrKey.isValidContract(contractId);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Duration unit multipliers in seconds
  */
