@@ -2,7 +2,7 @@
 mod test {
     use soroban_sdk::testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke};
     use soroban_sdk::{token, vec, Address, Env, IntoVal, Vec};
-    use crate::{PaymentStreamContract, PaymentStreamContractClient, StreamParams, StreamStatus};
+    use crate::{Error, PaymentStreamContract, PaymentStreamContractClient, StreamParams, StreamStatus};
 
 
     
@@ -1927,12 +1927,43 @@ fn test_execute_resolution_after_timelock_succeeds() {
 
     let stream = client.get_stream(&stream_id);
     assert_eq!(stream.status, StreamStatus::Completed);
-    assert_eq!(stream.withdrawn_amount, 600);
+    // The full escrowed balance is considered settled once execution
+    // completes, not just the amount paid to the recipient.
+    assert_eq!(stream.withdrawn_amount, 1000);
 
     let queued = client.get_queued_resolution(&dispute_id).unwrap();
     assert!(queued.executed);
 
     assert_eq!(client.get_active_dispute(&stream_id), None);
+}
+
+#[test]
+fn test_execute_resolution_partial_refunds_residual_to_sender() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, sender, recipient, token, contract_id, stream_id) = setup_dispute_test(&env);
+    let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+    // Resolve only part of the 1000-token escrow (300 + 200 = 500), leaving
+    // 500 unallocated.
+    let dispute_id = client.resolve_dispute(&stream_id, &300, &200);
+
+    env.ledger().set_timestamp(2 * DAY + 1);
+    client.execute_resolution(&dispute_id);
+
+    let token_client = token::Client::new(&env, &token);
+    // The sender receives both their explicit resolution share and the
+    // unallocated residual: 200 + 500 = 700.
+    assert_eq!(token_client.balance(&recipient), 300);
+    assert_eq!(token_client.balance(&sender), 700);
+
+    // No funds are left stranded in the contract.
+    assert_eq!(token_client.balance(&contract_id), 0);
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Completed);
+    assert_eq!(stream.withdrawn_amount, stream.balance);
 }
 
 #[test]
@@ -2008,8 +2039,8 @@ fn test_cancel_queued_resolution_restores_paused_stream() {
     let stream = client.get_stream(&stream_id);
     assert_eq!(stream.status, StreamStatus::Paused);
 
-    // Pausing doesn't decrement active count, so it should remain 0 (was already
-    // decremented when the stream was originally paused)
+    // The count was already decremented when the stream was originally paused,
+    // and cancelling the dispute restores that Paused status, so it stays 0.
     let protocol_metrics = client.get_protocol_metrics();
     assert_eq!(protocol_metrics.total_active_streams, 0);
 }
@@ -2150,8 +2181,15 @@ fn test_deposit_blocked_during_dispute() {
 
     client.resolve_dispute(&stream_id, &600, &400);
 
+    // The stream is already at capacity (balance == total_amount), so a
+    // deposit would fail with DepositExceedsTotal even without a dispute.
+    // Assert the specific error to prove this is actually blocked by the
+    // dispute, not by capacity.
     let result = client.try_deposit(&stream_id, &1);
-    assert!(result.is_err());
+    match result {
+        Err(Ok(err)) => assert_eq!(err, Error::DisputeInProgress.into()),
+        other => panic!("expected Error::DisputeInProgress, got {:?}", other),
+    }
 }
 
 #[test]

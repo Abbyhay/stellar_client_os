@@ -1565,7 +1565,20 @@ impl PaymentStreamContract {
             token_client.transfer(&env.current_contract_address(), &stream.sender, &queued.sender_amount);
         }
 
-        stream.withdrawn_amount += queued.recipient_amount;
+        // A resolution may allocate less than the full escrowed balance
+        // (e.g. only the disputed portion). Refund whatever is left over to
+        // the sender so completing the stream never strands funds in the
+        // contract with no remaining exit path.
+        let escrowed_before = stream.balance - stream.withdrawn_amount;
+        let residual = escrowed_before - queued.recipient_amount - queued.sender_amount;
+        if residual > 0 {
+            token_client.transfer(&env.current_contract_address(), &stream.sender, &residual);
+        }
+
+        // The entire escrowed balance has now left the contract (split
+        // between recipient, sender, and any residual refund), so mark it
+        // as fully settled rather than just crediting the recipient share.
+        stream.withdrawn_amount = stream.balance;
         stream.status = StreamStatus::Completed;
 
         env.storage().persistent().set(&DataKey::Stream(queued.stream_id), &stream);
