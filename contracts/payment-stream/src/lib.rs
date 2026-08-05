@@ -1,5 +1,8 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env};
+use soroban_sdk::{
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    panic_with_error, token, Address, Env, Symbol, Vec,
+};
 
 /// Persistent/instance storage keys.
 ///
@@ -18,6 +21,8 @@ pub enum DataKey {
     Stream(u64),
     Metrics(u64),
     Delegate(u64),
+    /// Global emergency-pause circuit breaker flag
+    Paused,
 }
 
 /// Stream status enum
@@ -72,7 +77,7 @@ pub struct ProtocolMetrics {
 }
 
 /// Fee collected event data
-#[contracttype]
+#[contractevent(topics = ["FeeCollected"])]
 #[derive(Clone)]
 pub struct FeeCollectedEvent {
     pub stream_id: u64,
@@ -80,7 +85,7 @@ pub struct FeeCollectedEvent {
 }
 
 /// Stream deposit event data
-#[contracttype]
+#[contractevent(topics = ["StreamDeposit"])]
 #[derive(Clone)]
 pub struct StreamDepositEvent {
     pub stream_id: u64,
@@ -88,7 +93,7 @@ pub struct StreamDepositEvent {
 }
 
 /// Swap-deposit event data — emitted when a cross-asset deposit completes
-#[contracttype]
+#[contractevent(topics = ["SwapDeposit"])]
 #[derive(Clone)]
 pub struct SwapDepositEvent {
     /// The stream that received the deposit
@@ -102,7 +107,7 @@ pub struct SwapDepositEvent {
 }
 
 /// Delegation granted event data
-#[contracttype]
+#[contractevent(topics = ["DelegationGranted"])]
 #[derive(Clone)]
 pub struct DelegationGrantedEvent {
     pub stream_id: u64,
@@ -111,7 +116,7 @@ pub struct DelegationGrantedEvent {
 }
 
 /// Delegation revoked event data
-#[contracttype]
+#[contractevent(topics = ["DelegationRevoked"])]
 #[derive(Clone)]
 pub struct DelegationRevokedEvent {
     pub stream_id: u64,
@@ -119,7 +124,7 @@ pub struct DelegationRevokedEvent {
 }
 
 // Stream paused event
-#[contracttype]
+#[contractevent(topics = ["StreamPaused"])]
 #[derive(Clone)]
 pub struct StreamPausedEvent {
     pub stream_id: u64,
@@ -127,7 +132,7 @@ pub struct StreamPausedEvent {
 }
 
 // Stream resumed event
-#[contracttype]
+#[contractevent(topics = ["StreamResumed"])]
 #[derive(Clone)]
 pub struct StreamResumedEvent {
     pub stream_id: u64,
@@ -136,7 +141,7 @@ pub struct StreamResumedEvent {
 }
 
 /// Emergency paused event data
-#[contracttype]
+#[contractevent(topics = ["EmergencyPaused"])]
 #[derive(Clone)]
 pub struct EmergencyPausedEvent {
     pub paused_by: Address,
@@ -144,7 +149,7 @@ pub struct EmergencyPausedEvent {
 }
 
 /// Emergency unpaused event data
-#[contracttype]
+#[contractevent(topics = ["EmergencyUnpaused"])]
 #[derive(Clone)]
 pub struct EmergencyUnpausedEvent {
     pub unpaused_by: Address,
@@ -178,6 +183,28 @@ pub enum Error {
     AlreadyPaused = 18,
     /// Contract is not currently paused
     NotPaused = 19,
+    /// Caller tried to swap the stream token for itself; use `deposit()` instead
+    InvalidSwapPath = 20,
+    /// The DEX swap could not be completed
+    SwapFailed = 21,
+    /// The swap output fell below the caller's `min_amount_out`
+    SlippageExceeded = 22,
+}
+
+/// Client interface for the DEX router contract used by `deposit_with_swap`.
+///
+/// The router address is configured via `set_dex_router` and must implement
+/// `swap_exact_tokens_for_tokens` (strict-send path payment):
+/// swap `amount_in` of `path[0]` into `path[last]`, crediting the output to `to`.
+#[contractclient(name = "DexRouterClient")]
+pub trait DexRouter {
+    fn swap_exact_tokens_for_tokens(
+        env: Env,
+        amount_in: i128,
+        min_amount_out: i128,
+        path: Vec<Address>,
+        to: Address,
+    ) -> Vec<i128>;
 }
 
 // Constants
@@ -228,7 +255,7 @@ impl PaymentStreamContract {
         let paused: bool = env
             .storage()
             .instance()
-            .get(&Symbol::new(env, "paused"))
+            .get(&DataKey::Paused)
             .unwrap_or(false);
         if paused {
             panic_with_error!(env, Error::ContractPaused);
@@ -251,14 +278,14 @@ impl PaymentStreamContract {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "admin"))
+            .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         admin.require_auth();
 
         let already_paused: bool = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "paused"))
+            .get(&DataKey::Paused)
             .unwrap_or(false);
         if already_paused {
             panic_with_error!(&env, Error::AlreadyPaused);
@@ -266,19 +293,17 @@ impl PaymentStreamContract {
 
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, "paused"), &true);
+            .set(&DataKey::Paused, &true);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
         let now = env.ledger().timestamp();
-        env.events().publish(
-            ("EmergencyPaused",),
-            EmergencyPausedEvent {
-                paused_by: admin,
-                paused_at: now,
-            },
-        );
+        EmergencyPausedEvent {
+            paused_by: admin,
+            paused_at: now,
+        }
+        .publish(&env);
     }
 
     /// Deactivate the global emergency pause switch, resuming normal operation.
@@ -293,14 +318,14 @@ impl PaymentStreamContract {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "admin"))
+            .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         admin.require_auth();
 
         let paused: bool = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, "paused"))
+            .get(&DataKey::Paused)
             .unwrap_or(false);
         if !paused {
             panic_with_error!(&env, Error::NotPaused);
@@ -308,26 +333,24 @@ impl PaymentStreamContract {
 
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, "paused"), &false);
+            .set(&DataKey::Paused, &false);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
         let now = env.ledger().timestamp();
-        env.events().publish(
-            ("EmergencyUnpaused",),
-            EmergencyUnpausedEvent {
-                unpaused_by: admin,
-                unpaused_at: now,
-            },
-        );
+        EmergencyUnpausedEvent {
+            unpaused_by: admin,
+            unpaused_at: now,
+        }
+        .publish(&env);
     }
 
     /// Returns `true` when the global emergency pause is active.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&Symbol::new(&env, "paused"))
+            .get(&DataKey::Paused)
             .unwrap_or(false)
     }
 
@@ -348,7 +371,6 @@ impl PaymentStreamContract {
     ) -> u64 {
         Self::assert_not_paused(&env);
         sender.require_auth();
-        Self::require_not_paused(&env);
 
         // Validate inputs
         if total_amount <= 0 {
@@ -438,7 +460,6 @@ impl PaymentStreamContract {
         }
 
         stream.sender.require_auth();
-        Self::require_not_paused(&env);
 
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -471,7 +492,7 @@ impl PaymentStreamContract {
         env.storage().persistent().extend_ttl(&DataKey::Metrics(stream_id), LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // Emit StreamDeposit event
-        env.events().publish(("StreamDeposit", stream_id), StreamDepositEvent { stream_id, amount });
+        StreamDepositEvent { stream_id, amount }.publish(&env);
     }
 
     /// Deposit by first swapping a source asset into the stream token via the Stellar DEX.
@@ -512,6 +533,9 @@ impl PaymentStreamContract {
         min_amount_out: i128,
         swap_path: Vec<Address>,
     ) {
+        // 0. Emergency circuit breaker — same policy as `deposit`
+        Self::assert_not_paused(&env);
+
         // 1. Load stream and validate status
         let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
 
@@ -603,47 +627,45 @@ impl PaymentStreamContract {
 
         // 10. Persist updated stream state
         stream.balance = new_balance;
-        env.storage().persistent().set(&stream_id, &stream);
-        env.storage().persistent().extend_ttl(&stream_id, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Stream(stream_id), &stream);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Stream(stream_id), LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // 11. Update stream metrics
         let mut metrics: StreamMetrics = env
             .storage()
             .persistent()
-            .get(&(stream_id, Symbol::new(&env, "metrics")))
+            .get(&DataKey::Metrics(stream_id))
             .unwrap_or_else(|| Self::default_stream_metrics(&env));
 
         metrics.last_activity = env.ledger().timestamp();
 
         env.storage()
             .persistent()
-            .set(&(stream_id, Symbol::new(&env, "metrics")), &metrics);
-        env.storage().persistent().extend_ttl(
-            &(stream_id, Symbol::new(&env, "metrics")),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
+            .set(&DataKey::Metrics(stream_id), &metrics);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Metrics(stream_id), LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // 12. Emit events
         //
         // `SwapDeposit` carries swap-specific details for indexers.
         // `StreamDeposit` is also emitted so existing listeners remain compatible.
-        env.events().publish(
-            ("SwapDeposit", stream_id),
-            SwapDepositEvent {
-                stream_id,
-                from_token,
-                amount_in,
-                amount_out: actual_received,
-            },
-        );
-        env.events().publish(
-            ("StreamDeposit", stream_id),
-            StreamDepositEvent {
-                stream_id,
-                amount: actual_received,
-            },
-        );
+        SwapDepositEvent {
+            stream_id,
+            from_token,
+            amount_in,
+            amount_out: actual_received,
+        }
+        .publish(&env);
+        StreamDepositEvent {
+            stream_id,
+            amount: actual_received,
+        }
+        .publish(&env);
     }
 
     /// Register the DEX router contract address (admin only).
@@ -728,11 +750,11 @@ impl PaymentStreamContract {
         let delegate_key = DataKey::Delegate(stream_id);
         if let Some(old_delegate) = env.storage().persistent().get::<_, Address>(&delegate_key) {
             if old_delegate != delegate {
-                let revoke_event = DelegationRevokedEvent {
+                DelegationRevokedEvent {
                     stream_id,
                     recipient: stream.recipient.clone(),
-                };
-                env.events().publish(("DelegationRevoked", stream_id), revoke_event);
+                }
+                .publish(&env);
             }
         }
 
@@ -764,12 +786,12 @@ impl PaymentStreamContract {
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // Emit event
-        let event = DelegationGrantedEvent {
+        DelegationGrantedEvent {
             stream_id,
             recipient: stream.recipient,
             delegate: delegate.clone(),
-        };
-        env.events().publish(("DelegationGranted", stream_id), event);
+        }
+        .publish(&env);
     }
 
     /// Revoke the delegate for a stream
@@ -796,11 +818,11 @@ impl PaymentStreamContract {
             env.storage().persistent().extend_ttl(&DataKey::Metrics(stream_id), LEDGER_THRESHOLD, LEDGER_BUMP);
 
             // Emit event
-            let event = DelegationRevokedEvent {
+            DelegationRevokedEvent {
                 stream_id,
                 recipient: stream.recipient,
-            };
-            env.events().publish(("DelegationRevoked", stream_id), event);
+            }
+            .publish(&env);
         }
     }
 
@@ -872,7 +894,6 @@ impl PaymentStreamContract {
         let mut stream: Stream = Self::get_stream(env.clone(), stream_id);
 
         Self::assert_is_recipient_or_delegate(&env, stream_id);
-        Self::require_not_paused(&env);
 
         let available = Self::withdrawable_amount(env.clone(), stream_id);
         if amount > available || amount <= 0 {
@@ -920,7 +941,7 @@ impl PaymentStreamContract {
         if fee > 0 {
             let fee_collector: Address = env.storage().instance().get(&DataKey::FeeCollector).unwrap();
             token_client.transfer(&env.current_contract_address(), &fee_collector, &fee);
-            env.events().publish(("FeeCollected", stream_id), fee);
+            FeeCollectedEvent { stream_id, amount: fee }.publish(&env);
         }
     }
 
@@ -972,13 +993,11 @@ impl PaymentStreamContract {
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // Emit StreamPaused event
-        env.events().publish(
-            ("StreamPaused", stream_id),
-            StreamPausedEvent {
-                stream_id,
-                paused_at: current_time,
-            },
-        );
+        StreamPausedEvent {
+            stream_id,
+            paused_at: current_time,
+        }
+        .publish(&env);
     }
 
     /// Resume a paused stream (sender only)
@@ -1031,14 +1050,12 @@ impl PaymentStreamContract {
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // Emit StreamResumed event
-        env.events().publish(
-            ("StreamResumed", stream_id),
-            StreamResumedEvent {
-                stream_id,
-                resumed_at: current_time,
-                paused_duration,
-            },
-        );
+        StreamResumedEvent {
+            stream_id,
+            resumed_at: current_time,
+            paused_duration,
+        }
+        .publish(&env);
     }
 
     /// Cancel a stream

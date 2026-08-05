@@ -1,6 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Symbol, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
+    Env, Vec,
 };
 
 /// Funding milestone threshold levels for badge eligibility
@@ -36,7 +37,7 @@ pub struct UserContribution {
 }
 
 /// Badge minted event data
-#[contracttype]
+#[contractevent(topics = ["badge_minted"])]
 #[derive(Clone)]
 pub struct BadgeMintedEvent {
     pub badge_id: u64,
@@ -47,7 +48,7 @@ pub struct BadgeMintedEvent {
 }
 
 /// Contribution recorded event data
-#[contracttype]
+#[contractevent(topics = ["contribution_recorded"])]
 #[derive(Clone)]
 pub struct ContributionRecordedEvent {
     pub contributor: Address,
@@ -163,6 +164,14 @@ impl SoulboundBadgeContract {
         
         user_contribution.last_updated = env.ledger().timestamp();
         
+        // Persist the updated contribution total *before* minting badges so that
+        // `mint_badge` reads the fresh record (with the new total and any badges
+        // minted by earlier calls in this same contribution).
+        env.storage().persistent().set(
+            &DataKey::UserContribution(contributor.clone()),
+            &user_contribution,
+        );
+        
         // Check for new milestone achievements
         let new_badges = Self::check_and_mint_badges(
             env.clone(),
@@ -171,24 +180,17 @@ impl SoulboundBadgeContract {
             &user_contribution.badges_minted,
         );
         
-        // Update user contribution record
-        env.storage().persistent().set(
-            &DataKey::UserContribution(contributor.clone()),
-            &user_contribution,
-        );
         env.storage().persistent()
             .extend_ttl(&DataKey::UserContribution(contributor.clone()), LEDGER_THRESHOLD, LEDGER_BUMP);
         
         // Emit contribution recorded event
-        env.events().publish(
-            (Symbol::new(&env, "contribution_recorded"),),
-            ContributionRecordedEvent {
-                contributor: contributor.clone(),
-                amount,
-                total_contributed: user_contribution.total_contributed,
-                timestamp: env.ledger().timestamp(),
-            },
-        );
+        ContributionRecordedEvent {
+            contributor: contributor.clone(),
+            amount,
+            total_contributed: user_contribution.total_contributed,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
         
         new_badges
     }
@@ -422,16 +424,14 @@ impl SoulboundBadgeContract {
             .extend_ttl(&DataKey::UserContribution(contributor.clone()), LEDGER_THRESHOLD, LEDGER_BUMP);
         
         // Emit badge minted event
-        env.events().publish(
-            (Symbol::new(&env, "badge_minted"),),
-            BadgeMintedEvent {
-                badge_id,
-                owner: contributor.clone(),
-                milestone_level,
-                total_contributed,
-                timestamp: env.ledger().timestamp(),
-            },
-        );
+        BadgeMintedEvent {
+            badge_id,
+            owner: contributor.clone(),
+            milestone_level,
+            total_contributed,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
         
         badge_id
     }
@@ -460,7 +460,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "AlreadyInitialized")]
+    #[should_panic(expected = "Error(Contract, #1)")]
     fn test_re_initialize_fails() {
         let env = Env::default();
         env.mock_all_auths();
@@ -583,7 +583,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidAmount")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_record_contribution_zero_amount() {
         let env = Env::default();
         env.mock_all_auths();
@@ -600,7 +600,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidAmount")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_record_contribution_negative_amount() {
         let env = Env::default();
         env.mock_all_auths();
@@ -630,7 +630,7 @@ mod test {
 
         client.initialize(&admin, &token);
 
-        let contribution = client.record_contribution(&contributor, &5_000);
+        client.record_contribution(&contributor, &5_000);
         
         let user_contribution = client.get_user_contribution(&contributor);
         assert_eq!(user_contribution.total_contributed, 5_000);
@@ -672,16 +672,16 @@ mod test {
         client.initialize(&admin, &token);
 
         // Before contribution
-        assert!(!client.is_eligible_for_badge(&contributor, MilestoneLevel::Bronze));
+        assert!(!client.is_eligible_for_badge(&contributor, &MilestoneLevel::Bronze));
 
         // After contribution
         client.record_contribution(&contributor, &1_000);
         
         // Now has badge, so not eligible for same badge
-        assert!(!client.is_eligible_for_badge(&contributor, MilestoneLevel::Bronze));
+        assert!(!client.is_eligible_for_badge(&contributor, &MilestoneLevel::Bronze));
         
         // But eligible for next level
-        assert!(!client.is_eligible_for_badge(&contributor, MilestoneLevel::Silver));
+        assert!(!client.is_eligible_for_badge(&contributor, &MilestoneLevel::Silver));
     }
 
     #[test]
@@ -708,7 +708,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "BadgeNotFound")]
+    #[should_panic(expected = "Error(Contract, #6)")]
     fn test_get_badge_not_found() {
         let env = Env::default();
         env.mock_all_auths();
@@ -778,7 +778,7 @@ mod test {
 
         env.ledger().set(LedgerInfo {
             timestamp: 12345,
-            protocol_version: env.ledger().protocol_version(),
+            protocol_version: 25,
             sequence_number: 10,
             network_id: Default::default(),
             base_reserve: 10,

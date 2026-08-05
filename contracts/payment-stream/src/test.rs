@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod test {
-    use super::*;
     use soroban_sdk::testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke};
     use soroban_sdk::{token, Address, Env, IntoVal};
     use crate::{PaymentStreamContract, PaymentStreamContractClient, StreamStatus};
@@ -1839,7 +1838,7 @@ fn test_withdraw_after_pause_and_resume() {
     fn setup_paused_contract(
         env: &Env,
     ) -> (
-        PaymentStreamContractClient,
+        PaymentStreamContractClient<'_>,
         Address, // contract_id
         Address, // admin
         Address, // fee_collector
@@ -1916,7 +1915,7 @@ fn test_withdraw_after_pause_and_resume() {
         client.emergency_pause();
 
         let events = env.events().all();
-        assert!(events.len() > 0);
+        assert!(!events.events().is_empty());
     }
 
     /// `emergency_unpause` emits the correct event.
@@ -1930,7 +1929,7 @@ fn test_withdraw_after_pause_and_resume() {
         client.emergency_unpause();
 
         let events = env.events().all();
-        assert!(events.len() > 0);
+        assert!(!events.events().is_empty());
     }
 
     /// Double-pause is rejected with `AlreadyPaused` (error code 18).
