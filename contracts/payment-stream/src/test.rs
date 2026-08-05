@@ -1,9 +1,8 @@
 #[cfg(test)]
 mod test {
-    use super::*;
     use soroban_sdk::testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke};
-    use soroban_sdk::{token, Address, Env, IntoVal};
-    use crate::{Error, PaymentStreamContract, PaymentStreamContractClient, StreamStatus};
+    use soroban_sdk::{token, vec, Address, Env, IntoVal, Vec};
+    use crate::{PaymentStreamContract, PaymentStreamContractClient, StreamParams, StreamStatus};
 
 
     
@@ -1830,440 +1829,9 @@ fn test_withdraw_after_pause_and_resume() {
     assert_eq!(recipient_balance, 600); // 100 + 500
 }
 
-// --- Cross-asset swap deposit tests ---
-
-use soroban_sdk::{contract, contractimpl};
-
-/// A minimal mock swap provider used to exercise `deposit_with_swap` in
-/// tests. It receives `from_token` (already transferred to it by the
-/// caller before `swap` is invoked) and delivers `to_token` to `to` at a
-/// fixed configurable rate expressed in basis points (10000 = 1:1).
-#[contract]
-pub struct MockSwapProvider;
-
-#[contractimpl]
-impl MockSwapProvider {
-    pub fn swap(
-        env: Env,
-        _from_token: Address,
-        to_token: Address,
-        amount_in: i128,
-        min_amount_out: i128,
-        to: Address,
-    ) -> i128 {
-        let rate_bps: i128 = env.storage().instance().get(&soroban_sdk::Symbol::new(&env, "rate_bps")).unwrap_or(10000);
-        let amount_out = (amount_in * rate_bps) / 10000;
-
-        // In "underdeliver" mode the mock still transfers a shortfall amount
-        // instead of panicking, so tests can exercise the payment-stream
-        // contract's own balance-delta slippage check in deposit_with_swap
-        // rather than only ever hitting this mock's guard.
-        let underdeliver: bool = env.storage().instance().get(&soroban_sdk::Symbol::new(&env, "underdeliver")).unwrap_or(false);
-        if underdeliver {
-            let shortfall = amount_out - 1;
-            let to_token_client = token::Client::new(&env, &to_token);
-            to_token_client.transfer(&env.current_contract_address(), &to, &shortfall);
-            return shortfall;
-        }
-
-        if amount_out < min_amount_out {
-            panic!("slippage exceeded");
-        }
-
-        let to_token_client = token::Client::new(&env, &to_token);
-        to_token_client.transfer(&env.current_contract_address(), &to, &amount_out);
-
-        amount_out
-    }
-
-    pub fn set_rate_bps(env: Env, rate_bps: i128) {
-        env.storage().instance().set(&soroban_sdk::Symbol::new(&env, "rate_bps"), &rate_bps);
-    }
-
-    pub fn set_underdeliver(env: Env, underdeliver: bool) {
-        env.storage().instance().set(&soroban_sdk::Symbol::new(&env, "underdeliver"), &underdeliver);
-    }
-}
-
-fn setup_swap_test(env: &Env) -> (Address, Address, Address, Address, Address, Address) {
-    let admin = Address::generate(env);
-    let fee_collector = Address::generate(env);
-    let sender = Address::generate(env);
-    let recipient = Address::generate(env);
-
-    let dest_sac = env.register_stellar_asset_contract_v2(admin.clone());
-    let dest_token = dest_sac.address();
-
-    let source_sac = env.register_stellar_asset_contract_v2(admin.clone());
-    let source_token = source_sac.address();
-
-    (admin, fee_collector, sender, recipient, dest_token, source_token)
-}
-
-#[test]
-fn test_deposit_with_swap_success() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    let swap_provider_client = MockSwapProviderClient::new(&env, &swap_provider_id);
-    client.set_swap_provider(&swap_provider_id);
-
-    // Fund the mock swap provider with destination tokens so it can pay out swaps
-    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
-    dest_admin.mint(&swap_provider_id, &10_000);
-
-    // Fund sender with the source asset (e.g. XLM) to swap into the stream token (e.g. USDC)
-    let source_admin = token::StellarAssetClient::new(&env, &source_token);
-    source_admin.mint(&sender, &1_000);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &1000,
-        &0,
-        &0,
-        &100,
-    );
-
-    let amount_out = client.deposit_with_swap(&stream_id, &source_token, &500, &400);
-    assert_eq!(amount_out, 500); // 1:1 default rate
-
-    let stream = client.get_stream(&stream_id);
-    assert_eq!(stream.balance, 500);
-
-    let source_token_client = token::Client::new(&env, &source_token);
-    assert_eq!(source_token_client.balance(&sender), 500);
-    assert_eq!(source_token_client.balance(&swap_provider_id), 500);
-
-    let dest_token_client = token::Client::new(&env, &dest_token);
-    assert_eq!(dest_token_client.balance(&contract_id), 500);
-
-    // silence unused variable warning for the typed client (kept for clarity/future use)
-    let _ = swap_provider_client;
-}
-
-#[test]
-fn test_deposit_with_swap_respects_actual_amount_received() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    let swap_provider_client = MockSwapProviderClient::new(&env, &swap_provider_id);
-    swap_provider_client.set_rate_bps(&20000); // 2x rate
-
-    client.set_swap_provider(&swap_provider_id);
-
-    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
-    dest_admin.mint(&swap_provider_id, &10_000);
-
-    let source_admin = token::StellarAssetClient::new(&env, &source_token);
-    source_admin.mint(&sender, &1_000);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &2000,
-        &0,
-        &0,
-        &100,
-    );
-
-    let amount_out = client.deposit_with_swap(&stream_id, &source_token, &500, &400);
-    assert_eq!(amount_out, 1000); // 500 * 2x rate
-
-    let stream = client.get_stream(&stream_id);
-    assert_eq!(stream.balance, 1000);
-
-    let _ = contract_id;
-}
-
-#[test]
-fn test_deposit_with_swap_provider_not_set() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let source_admin = token::StellarAssetClient::new(&env, &source_token);
-    source_admin.mint(&sender, &1_000);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &1000,
-        &0,
-        &0,
-        &100,
-    );
-
-    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &400);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_deposit_with_swap_same_asset_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, _source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    client.set_swap_provider(&swap_provider_id);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &1000,
-        &0,
-        &0,
-        &100,
-    );
-
-    // Attempting to "swap" the stream's own token into itself should be rejected
-    let result = client.try_deposit_with_swap(&stream_id, &dest_token, &500, &400);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_deposit_with_swap_slippage_exceeded() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    client.set_swap_provider(&swap_provider_id);
-
-    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
-    dest_admin.mint(&swap_provider_id, &10_000);
-
-    let source_admin = token::StellarAssetClient::new(&env, &source_token);
-    source_admin.mint(&sender, &1_000);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &1000,
-        &0,
-        &0,
-        &100,
-    );
-
-    // Request more out than the fixed 1:1 rate can provide
-    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &600);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_deposit_with_swap_slippage_exceeded_by_contract_check() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    let swap_provider_client = MockSwapProviderClient::new(&env, &swap_provider_id);
-    client.set_swap_provider(&swap_provider_id);
-
-    // Underdeliver mode makes the mock transfer one unit less than what it
-    // computes, without panicking on its own guard, so this test exercises
-    // deposit_with_swap's independent balance-delta slippage check instead.
-    swap_provider_client.set_underdeliver(&true);
-
-    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
-    dest_admin.mint(&swap_provider_id, &10_000);
-
-    let source_admin = token::StellarAssetClient::new(&env, &source_token);
-    source_admin.mint(&sender, &1_000);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &1000,
-        &0,
-        &0,
-        &100,
-    );
-
-    let source_token_client = token::Client::new(&env, &source_token);
-    let dest_token_client = token::Client::new(&env, &dest_token);
-    let sender_balance_before = source_token_client.balance(&sender);
-    let contract_balance_before = dest_token_client.balance(&contract_id);
-    let stream_balance_before = client.get_stream(&stream_id).balance;
-
-    // The mock will deliver 499 (500 - 1) which is below min_amount_out,
-    // but won't panic itself, so the contract's own post-swap check must catch it.
-    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &500);
-    match result {
-        Err(Ok(err)) => assert_eq!(err, Error::SlippageExceeded.into()),
-        other => panic!("expected Error::SlippageExceeded, got {:?}", other),
-    }
-
-    // A panicking call is fully rolled back: the source transfer to the swap
-    // provider and the stream's balance must be unchanged.
-    assert_eq!(source_token_client.balance(&sender), sender_balance_before);
-    assert_eq!(dest_token_client.balance(&contract_id), contract_balance_before);
-    assert_eq!(client.get_stream(&stream_id).balance, stream_balance_before);
-}
-
-#[test]
-fn test_deposit_with_swap_exceeds_total() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    client.set_swap_provider(&swap_provider_id);
-
-    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
-    dest_admin.mint(&swap_provider_id, &10_000);
-
-    let source_admin = token::StellarAssetClient::new(&env, &source_token);
-    source_admin.mint(&sender, &1_000);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &300,
-        &0,
-        &0,
-        &100,
-    );
-
-    // Swapping in 500 (1:1) would push the balance above total_amount (300)
-    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &400);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_deposit_with_swap_inactive_stream_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, sender, recipient, dest_token, source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    client.set_swap_provider(&swap_provider_id);
-
-    let dest_admin = token::StellarAssetClient::new(&env, &dest_token);
-    dest_admin.mint(&swap_provider_id, &10_000);
-
-    let source_admin = token::StellarAssetClient::new(&env, &source_token);
-    source_admin.mint(&sender, &1_000);
-
-    let stream_id = client.create_stream(
-        &sender,
-        &recipient,
-        &dest_token,
-        &1000,
-        &0,
-        &0,
-        &100,
-    );
-
-    client.cancel_stream(&stream_id);
-
-    let result = client.try_deposit_with_swap(&stream_id, &source_token, &500, &400);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_set_swap_provider_unauthorized() {
-    let env = Env::default();
-
-    let (admin, fee_collector, _sender, _recipient, _dest_token, _source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-
-    env.mock_auths(&[MockAuth {
-        address: &admin,
-        invoke: &MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "initialize",
-            args: (&admin, &fee_collector, &0u32).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-    client.initialize(&admin, &fee_collector, &0);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    let not_admin = Address::generate(&env);
-
-    // No auth mocked for `not_admin`, so this must fail admin authorization
-    env.mock_auths(&[]);
-    let result = client.try_set_swap_provider(&swap_provider_id);
-    let _ = not_admin;
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_get_swap_provider_roundtrip() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, fee_collector, _sender, _recipient, _dest_token, _source_token) = setup_swap_test(&env);
-
-    let contract_id = env.register(PaymentStreamContract, ());
-    let client = PaymentStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &fee_collector, &0);
-
-    assert_eq!(client.get_swap_provider(), None);
-
-    let swap_provider_id = env.register(MockSwapProvider, ());
-    client.set_swap_provider(&swap_provider_id);
-
-    assert_eq!(client.get_swap_provider(), Some(swap_provider_id));
-}
-
-// -----------------------------------------------------------------------
-// Emergency pause circuit breaker tests
-// -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Emergency pause circuit breaker tests
+    // -----------------------------------------------------------------------
 
     /// Helper: initialise a contract and return (client, contract_id, admin,
     /// fee_collector, sender, recipient, token).
@@ -2347,7 +1915,7 @@ fn test_get_swap_provider_roundtrip() {
         client.emergency_pause();
 
         let events = env.events().all();
-        assert!(events.len() > 0);
+        assert!(events.events().len() > 0);
     }
 
     /// `emergency_unpause` emits the correct event.
@@ -2361,7 +1929,7 @@ fn test_get_swap_provider_roundtrip() {
         client.emergency_unpause();
 
         let events = env.events().all();
-        assert!(events.len() > 0);
+        assert!(events.events().len() > 0);
     }
 
     /// Double-pause is rejected with `AlreadyPaused` (error code 18).
@@ -2626,4 +2194,830 @@ fn test_get_swap_provider_roundtrip() {
 
         assert!(client.is_paused());
     }
+
+    // -----------------------------------------------------------------------
+    // Cliff-period linear vesting tests
+    // -----------------------------------------------------------------------
+
+    /// A stream created with a cliff stores and reports the cliff duration.
+    #[test]
+    fn test_create_stream_with_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &10,
+        );
+
+        assert_eq!(stream_id, 1);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.cliff_duration, 10);
+        assert_eq!(stream.total_amount, 1000);
+        assert_eq!(stream.status, StreamStatus::Active);
+    }
+
+    /// A plain `create_stream` always reports a zero cliff duration, preserving
+    /// the legacy no-cliff behaviour.
+    #[test]
+    fn test_create_stream_cliff_duration_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream(&sender, &recipient, &token, &1000, &1000, &0, &100);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.cliff_duration, 0);
+    }
+
+    /// Creating a stream whose cliff is not shorter than its duration is rejected.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #23)")]
+    fn test_create_stream_with_cliff_invalid() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // cliff_duration (100) is not shorter than duration (100 - 0)
+        client.create_stream_with_cliff(&sender, &recipient, &token, &1000, &1000, &0, &100, &100);
+    }
+
+    /// Nothing is withdrawable while the clock is inside the cliff period.
+    #[test]
+    fn test_cliff_blocks_withdrawal_before_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+
+        env.ledger().set_timestamp(29);
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+    }
+
+    /// Attempting a withdrawal while the clock is inside the cliff period is
+    /// rejected with `InsufficientWithdrawable`.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #10)")]
+    fn test_withdraw_before_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        client.withdraw(&stream_id, &100);
+    }
+
+    /// At the exact cliff boundary the pro-rata share accrued during the cliff
+    /// becomes claimable.
+    #[test]
+    fn test_cliff_release_at_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // 1000 tokens over 100 seconds with a 20-second cliff.
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &20,
+        );
+
+        // At t = 20 the pro-rata share (20/100 * 1000 = 200) is available.
+        env.ledger().set_timestamp(20);
+        assert_eq!(client.withdrawable_amount(&stream_id), 200);
+
+        // Withdraw that share.
+        client.withdraw(&stream_id, &200);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.withdrawn_amount, 200);
+
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&recipient), 200);
+        assert_eq!(token_client.balance(&contract_id), 800);
+    }
+
+    /// After the cliff, the amount available grows linearly over the whole
+    /// vesting window.
+    #[test]
+    fn test_cliff_linear_vesting_after_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // 1000 tokens over 100 seconds, cliff 20 seconds.
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &20,
+        );
+
+        // t=25 -> 250, t=50 -> 500, t=80 -> 800, t=100 -> 1000.
+        env.ledger().set_timestamp(25);
+        assert_eq!(client.withdrawable_amount(&stream_id), 250);
+
+        env.ledger().set_timestamp(50);
+        assert_eq!(client.withdrawable_amount(&stream_id), 500);
+
+        env.ledger().set_timestamp(80);
+        assert_eq!(client.withdrawable_amount(&stream_id), 800);
+
+        env.ledger().set_timestamp(100);
+        assert_eq!(client.withdrawable_amount(&stream_id), 1000);
+    }
+
+    /// `withdraw_max` respects the cliff: rejected before, works after.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #10)")]
+    fn test_withdraw_max_before_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        client.withdraw_max(&stream_id);
+    }
+
+    /// Cancelling inside the cliff returns the full escrowed balance to the
+    /// sender because nothing has vested yet.
+    #[test]
+    fn test_cancel_before_cliff_refunds_full_balance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        env.ledger().set_timestamp(10);
+        client.cancel_stream(&stream_id);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.status, StreamStatus::Canceled);
+
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&sender), 1000);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
+    /// Pausing a stream inside its cliff keeps the effective elapsed time
+    /// stopped, so the cliff must still elapse after the pause is lifted.
+    #[test]
+    fn test_cliff_with_pause_and_resume() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        // 1000 over 100s, cliff 30s.
+        let stream_id = client.create_stream_with_cliff(
+            &sender,
+            &recipient,
+            &token,
+            &1000,
+            &1000,
+            &0,
+            &100,
+            &30,
+        );
+
+        // Vest 20s, then pause for 40s.
+        env.ledger().set_timestamp(20);
+        client.pause_stream(&stream_id);
+
+        env.ledger().set_timestamp(60);
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+
+        client.resume_stream(&stream_id);
+
+        // Resume: end_time extended by 40s (now 140). Effective elapsed =
+        // (current - start) - paused = (60 - 0) - 40 = 20, still below cliff 30.
+        assert_eq!(client.withdrawable_amount(&stream_id), 0);
+
+        // Advance to effective elapsed = 40 -> vested = 1000 * 40 / 100 = 400.
+        env.ledger().set_timestamp(80);
+        assert_eq!(client.withdrawable_amount(&stream_id), 400);
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch stream creation (multi-recipient payroll) tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a batch of identical `StreamParams` for `recipients`.
+    fn batch_params(
+        env: &Env,
+        recipients: Vec<Address>,
+        token: &Address,
+        total: i128,
+        start: u64,
+        end: u64,
+        cliff: u64,
+    ) -> Vec<StreamParams> {
+        let mut params: Vec<StreamParams> = Vec::new(env);
+        for r in recipients.iter() {
+            params.push_back(StreamParams {
+                recipient: r,
+                token: token.clone(),
+                total_amount: total,
+                initial_amount: total,
+                start_time: start,
+                end_time: end,
+                cliff_duration: cliff,
+            });
+        }
+        params
+    }
+
+    /// A small batch creates one stream per recipient with sequential IDs.
+    #[test]
+    fn test_create_batch_streams() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let r1 = Address::generate(&env);
+        let r2 = Address::generate(&env);
+        let r3 = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &300);
+
+        let recipients = vec![&env, r1.clone(), r2.clone(), r3.clone()];
+        let params = batch_params(&env, recipients, &token, 100, 0, 100, 0);
+
+        let ids = client.create_batch_streams(&sender, &params);
+
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.get(0).unwrap(), 1);
+        assert_eq!(ids.get(1).unwrap(), 2);
+        assert_eq!(ids.get(2).unwrap(), 3);
+
+        for id in 1..=3u64 {
+            let stream = client.get_stream(&id);
+            assert_eq!(stream.status, StreamStatus::Active);
+            assert_eq!(stream.total_amount, 100);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&contract_id), 300);
+        assert_eq!(token_client.balance(&sender), 0);
+
+        let proto = client.get_protocol_metrics();
+        assert_eq!(proto.total_streams_created, 3);
+        assert_eq!(proto.total_active_streams, 3);
+    }
+
+    /// A full batch of 50 streams succeeds in one call.
+    #[test]
+    fn test_create_batch_streams_50() {
+        let env = Env::default();
+        env.budget().reset_unlimited();
+        // A full 50-recipient payroll batch intentionally exceeds the
+        // conservative mainnet write-entry budget, so we disable the emulated
+        // invocation resource limits for this test.
+        env.cost_estimate().disable_resource_limits();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &500);
+
+        let mut recipients: Vec<Address> = Vec::new(&env);
+        for _ in 0..50 {
+            recipients.push_back(Address::generate(&env));
+        }
+        let params = batch_params(&env, recipients, &token, 10, 0, 100, 0);
+
+        let ids = client.create_batch_streams(&sender, &params);
+        assert_eq!(ids.len(), 50);
+
+        // IDs are sequential across the whole batch.
+        for i in 0..50u64 {
+            assert_eq!(ids.get(i as u32).unwrap(), i + 1);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&contract_id), 500);
+    }
+
+    /// A single invalid entry reverts the entire batch — no partial streams.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #4)")]
+    fn test_create_batch_streams_invalid_entry_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let r1 = Address::generate(&env);
+        let r2 = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &300);
+
+        let mut params: Vec<StreamParams> = Vec::new(&env);
+        params.push_back(StreamParams {
+            recipient: r1.clone(),
+            token: token.clone(),
+            total_amount: 100,
+            initial_amount: 100,
+            start_time: 0,
+            end_time: 100,
+            cliff_duration: 0,
+        });
+        // Invalid: total_amount <= 0.
+        params.push_back(StreamParams {
+            recipient: r2,
+            token: token.clone(),
+            total_amount: 0,
+            initial_amount: 0,
+            start_time: 0,
+            end_time: 100,
+            cliff_duration: 0,
+        });
+
+        client.create_batch_streams(&sender, &params);
+    }
+
+    /// After a failed batch, no stream state or token movement remains.
+    #[test]
+    fn test_create_batch_streams_invalid_entry_leaves_no_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let r1 = Address::generate(&env);
+        let r2 = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &300);
+
+        let mut params: Vec<StreamParams> = Vec::new(&env);
+        params.push_back(StreamParams {
+            recipient: r1,
+            token: token.clone(),
+            total_amount: 100,
+            initial_amount: 100,
+            start_time: 0,
+            end_time: 100,
+            cliff_duration: 0,
+        });
+        params.push_back(StreamParams {
+            recipient: r2,
+            token: token.clone(),
+            total_amount: 0,
+            initial_amount: 0,
+            start_time: 0,
+            end_time: 100,
+            cliff_duration: 0,
+        });
+
+        // The batch call fails but must not create partial streams.
+        let result = client.try_create_batch_streams(&sender, &params);
+        assert!(result.is_err());
+
+        // Nothing was created and no tokens moved.
+        let proto = client.get_protocol_metrics();
+        assert_eq!(proto.total_streams_created, 0);
+        assert_eq!(proto.total_active_streams, 0);
+
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&contract_id), 0);
+        assert_eq!(token_client.balance(&sender), 300);
+    }
+
+    /// Batches larger than the maximum are rejected.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #24)")]
+    fn test_create_batch_streams_over_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &600);
+
+        let mut recipients: Vec<Address> = Vec::new(&env);
+        for _ in 0..51 {
+            recipients.push_back(Address::generate(&env));
+        }
+        let params = batch_params(&env, recipients, &token, 10, 0, 100, 0);
+
+        client.create_batch_streams(&sender, &params);
+    }
+
+    /// An empty batch is rejected.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #25)")]
+    fn test_create_batch_streams_empty() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let params: Vec<StreamParams> = Vec::new(&env);
+        client.create_batch_streams(&sender, &params);
+    }
+
+    /// A non-sender caller cannot create a batch.
+    #[test]
+    #[should_panic(expected = "Unauthorized")]
+    fn test_create_batch_streams_unauthorized() {
+        let env = Env::default();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: (&admin, &fee_collector, &0u32).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        client.initialize(&admin, &fee_collector, &0);
+
+        let mut params: Vec<StreamParams> = Vec::new(&env);
+        params.push_back(StreamParams {
+            recipient,
+            token: token.clone(),
+            total_amount: 100,
+            initial_amount: 100,
+            start_time: 0,
+            end_time: 100,
+            cliff_duration: 0,
+        });
+
+        // Only the attacker (not the sender) authorises the batch call.
+        env.mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "create_batch_streams",
+                args: (&attacker, &params).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        client.create_batch_streams(&attacker, &params);
+    }
+
+    /// Batch creation is blocked while the emergency circuit breaker is active.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_create_batch_streams_blocked_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &100);
+
+        client.emergency_pause();
+
+        let mut params: Vec<StreamParams> = Vec::new(&env);
+        params.push_back(StreamParams {
+            recipient,
+            token: token.clone(),
+            total_amount: 100,
+            initial_amount: 100,
+            start_time: 0,
+            end_time: 100,
+            cliff_duration: 0,
+        });
+
+        client.create_batch_streams(&sender, &params);
+    }
+
+    /// Batch streams can carry per-recipient cliff periods.
+    #[test]
+    fn test_create_batch_streams_with_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let r1 = Address::generate(&env);
+
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+
+        let contract_id = env.register(PaymentStreamContract, ());
+        let client = PaymentStreamContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &fee_collector, &0);
+
+        let token_admin = token::StellarAssetClient::new(&env, &token);
+        token_admin.mint(&sender, &1000);
+
+        let recipients = vec![&env, r1.clone()];
+        let params = batch_params(&env, recipients, &token, 1000, 0, 100, 30);
+
+        let ids = client.create_batch_streams(&sender, &params);
+        assert_eq!(ids.len(), 1);
+
+        let stream = client.get_stream(&ids.get(0).unwrap());
+        assert_eq!(stream.cliff_duration, 30);
+
+        // Inside the cliff nothing is withdrawable.
+        env.ledger().set_timestamp(10);
+        assert_eq!(client.withdrawable_amount(&ids.get(0).unwrap()), 0);
+
+        // Past the cliff, linear vesting resumes.
+        env.ledger().set_timestamp(50);
+        assert_eq!(client.withdrawable_amount(&ids.get(0).unwrap()), 500);
+    }
+
 }

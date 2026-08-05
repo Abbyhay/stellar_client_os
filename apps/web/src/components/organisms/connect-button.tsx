@@ -56,6 +56,11 @@ export function ConnectButton() {
   };
 
   const handleDisconnect = async () => {
+    if (document.body.dataset.formDirty === 'true') {
+      if (!window.confirm("You have unsaved changes. Are you sure you want to disconnect? All form inputs will be lost.")) {
+        return;
+      }
+    }
     try {
       await disconnect();
       setDropdownOpen(false);

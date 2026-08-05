@@ -10,6 +10,18 @@ interface StreamCountdownProps {
 
 const StreamCountdown = ({ endTime, status }: StreamCountdownProps) => {
     const normalizedStatus = status.toLowerCase();
+
+    useEffect(() => {
+        if (normalizedStatus !== "active") return;
+
+        setCurrentTime(Date.now());
+
+        const interval = setInterval(() => {
+            setCurrentTime(Date.now());
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [normalizedStatus]);
     const currentTime = useSyncExternalStore(
         (onStoreChange: () => void) => {
             if (normalizedStatus !== "active") {
