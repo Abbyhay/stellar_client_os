@@ -1,8 +1,8 @@
 #![no_std]
 #![allow(deprecated)]
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error, token,
-    Address, Env, Vec,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    panic_with_error, token, Address, Env, Vec,
 };
 
 /// Persistent/instance storage keys.

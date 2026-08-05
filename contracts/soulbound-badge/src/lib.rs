@@ -440,7 +440,8 @@ impl SoulboundBadgeContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger, LedgerInfo};
+    use soroban_sdk::Event;
 
     #[test]
     fn test_initialize() {
@@ -498,16 +499,42 @@ mod test {
 
         client.initialize(&admin, &token);
 
-        // Contribute exactly bronze threshold
+        // Contribute exactly bronze threshold. This is the last contract
+        // invocation so the test snapshot captures the emitted events.
         let new_badges = client.record_contribution(&contributor, &1_000);
 
         assert_eq!(new_badges.len(), 1);
-        
-        let badge_id = new_badges.get(0).unwrap();
-        let badge = client.get_badge(&badge_id);
-        assert_eq!(badge.owner, contributor);
-        assert_eq!(badge.milestone_level, MilestoneLevel::Bronze);
-        assert_eq!(badge.total_contributed, 1_000);
+
+        let events = env.events().all();
+
+        // Verify the BadgeMintedEvent (Bronze) was emitted with the correct
+        // payload (topic "badge_minted" + badge_id/owner/milestone/amount).
+        let expected_badge = BadgeMintedEvent {
+            badge_id: 1,
+            owner: contributor.clone(),
+            milestone_level: MilestoneLevel::Bronze,
+            total_contributed: 1_000,
+            timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
+        assert!(
+            events.events().iter().any(|e| *e == expected_badge),
+            "expected BadgeMintedEvent to be emitted"
+        );
+
+        // Verify the ContributionRecordedEvent was emitted with the correct
+        // payload (topic "contribution_recorded" + amount/total).
+        let expected_contribution = ContributionRecordedEvent {
+            contributor: contributor.clone(),
+            amount: 1_000,
+            total_contributed: 1_000,
+            timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
+        assert!(
+            events.events().iter().any(|e| *e == expected_contribution),
+            "expected ContributionRecordedEvent to be emitted"
+        );
     }
 
     #[test]
@@ -524,13 +551,26 @@ mod test {
 
         client.initialize(&admin, &token);
 
-        // Contribute enough for gold badge
+        // Contribute enough for gold badge. This is the last contract
+        // invocation so the test snapshot captures the emitted events.
         let new_badges = client.record_contribution(&contributor, &100_000);
 
         assert_eq!(new_badges.len(), 3); // Bronze, Silver, Gold
-        
-        let user_badges = client.get_user_badges(&contributor);
-        assert_eq!(user_badges.len(), 3);
+
+        // Verify the ContributionRecordedEvent was emitted with the correct
+        // payload (topic "contribution_recorded" + amount/total).
+        let expected = ContributionRecordedEvent {
+            contributor: contributor.clone(),
+            amount: 100_000,
+            total_contributed: 100_000,
+            timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
+        let events = env.events().all();
+        assert!(
+            events.events().iter().any(|e| *e == expected),
+            "expected ContributionRecordedEvent to be emitted"
+        );
     }
 
     #[test]
@@ -574,12 +614,25 @@ mod test {
         let badges1 = client.record_contribution(&contributor, &1_000);
         assert_eq!(badges1.len(), 1);
 
-        // Second contribution - reach silver
+        // Second contribution - reach silver. This is the last contract
+        // invocation so the test snapshot captures its emitted events.
         let badges2 = client.record_contribution(&contributor, &9_000);
         assert_eq!(badges2.len(), 1); // Only silver
 
-        let user_badges = client.get_user_badges(&contributor);
-        assert_eq!(user_badges.len(), 2);
+        // Verify the final ContributionRecordedEvent was emitted with the
+        // correct payload (topic "contribution_recorded" + amount 9_000 / total 10_000).
+        let expected = ContributionRecordedEvent {
+            contributor: contributor.clone(),
+            amount: 9_000,
+            total_contributed: 10_000,
+            timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
+        let events = env.events().all();
+        assert!(
+            events.events().iter().any(|e| *e == expected),
+            "expected ContributionRecordedEvent to be emitted"
+        );
     }
 
     #[test]
@@ -671,16 +724,50 @@ mod test {
 
         client.initialize(&admin, &token);
 
-        // Before contribution
+        // Not eligible before any contribution
         assert!(!client.is_eligible_for_badge(&contributor, &MilestoneLevel::Bronze));
 
-        // After contribution
+        // Contribute 1_000 (bronze threshold). This is the last contract
+        // invocation so the test snapshot captures the emitted events.
         client.record_contribution(&contributor, &1_000);
-        
-        // Now has badge, so not eligible for same badge
+
+        // Verify the ContributionRecordedEvent was emitted with the correct
+        // payload (topic "contribution_recorded" + amount 1_000 / total 1_000).
+        let expected = ContributionRecordedEvent {
+            contributor: contributor.clone(),
+            amount: 1_000,
+            total_contributed: 1_000,
+            timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
+        let events = env.events().all();
+        assert!(
+            events.events().iter().any(|e| *e == expected),
+            "expected ContributionRecordedEvent to be emitted"
+        );
+    }
+
+    #[test]
+    fn test_not_eligible_for_next_milestone() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SoulboundBadgeContract, ());
+        let client = SoulboundBadgeContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contributor = Address::generate(&env);
+
+        client.initialize(&admin, &token);
+
+        client.record_contribution(&contributor, &1_000);
+
+        // With a total contribution of 1_000 the contributor already holds the
+        // Bronze badge, so they are not eligible for Bronze again. They are
+        // also NOT yet eligible for the next level (Silver), because that
+        // requires 10_000 total and they only have 1_000.
         assert!(!client.is_eligible_for_badge(&contributor, &MilestoneLevel::Bronze));
-        
-        // But eligible for next level
         assert!(!client.is_eligible_for_badge(&contributor, &MilestoneLevel::Silver));
     }
 
@@ -761,14 +848,42 @@ mod test {
 
         client.initialize(&admin, &token);
 
+        // The second contribution is the last contract invocation so the test
+        // snapshot captures its emitted events.
         client.record_contribution(&contributor1, &5_000);
         client.record_contribution(&contributor2, &15_000);
 
-        let badges1 = client.get_user_badges(&contributor1);
-        let badges2 = client.get_user_badges(&contributor2);
+        let events = env.events().all();
 
-        assert_eq!(badges1.len(), 1); // Bronze only
-        assert_eq!(badges2.len(), 2); // Bronze and Silver
+        // Verify the final ContributionRecordedEvent was emitted with the
+        // correct payload (topic "contribution_recorded" + amount 15_000 / total 15_000).
+        let expected_contribution = ContributionRecordedEvent {
+            contributor: contributor2.clone(),
+            amount: 15_000,
+            total_contributed: 15_000,
+            timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
+        assert!(
+            events.events().iter().any(|e| *e == expected_contribution),
+            "expected ContributionRecordedEvent to be emitted"
+        );
+
+        // contributor2 (15_000) reached Silver: badge ids are sequential, so
+        // contributor1 holds badge 1 (Bronze) and contributor2 holds badge 2
+        // (Bronze) and badge 3 (Silver).
+        let expected_silver = BadgeMintedEvent {
+            badge_id: 3,
+            owner: contributor2.clone(),
+            milestone_level: MilestoneLevel::Silver,
+            total_contributed: 15_000,
+            timestamp: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
+        assert!(
+            events.events().iter().any(|e| *e == expected_silver),
+            "expected Silver BadgeMintedEvent to be emitted"
+        );
     }
 
     #[test]

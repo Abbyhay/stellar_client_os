@@ -1,8 +1,12 @@
 #[cfg(test)]
 mod test {
     use soroban_sdk::testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke};
-    use soroban_sdk::{token, vec, Address, Env, IntoVal, Vec};
-    use crate::{PaymentStreamContract, PaymentStreamContractClient, StreamParams, StreamStatus};
+    use soroban_sdk::{token, vec, Address, Env, Event, IntoVal, Vec};
+    use crate::{
+        DelegationGrantedEvent, EmergencyPausedEvent, EmergencyUnpausedEvent,
+        PaymentStreamContract, PaymentStreamContractClient, StreamPausedEvent, StreamResumedEvent,
+        StreamParams, StreamStatus,
+    };
 
 
     
@@ -628,8 +632,9 @@ fn test_set_delegate() {
     let retrieved_delegate = client.get_delegate(&stream_id);
     assert_eq!(retrieved_delegate, Some(delegate.clone()));
 
-    // Verify delegation was set correctly
-    // (Event assertions removed - Events trait captures differently in host)
+    // (No event assertion here: the test ends with a get_delegate read, which
+    // clears the event buffer, so this test's snapshot holds no events. The
+    // DelegationGrantedEvent payload is asserted in test_delegate_withdraw.)
 }
 
 #[test]
@@ -669,9 +674,19 @@ fn test_delegate_withdraw() {
 
     env.ledger().set_timestamp(50);
 
-        // Verify event was emitted (at least one event should exist)
-        let events = env.events().all();
-        assert!(!events.events().is_empty());
+    // Verify the DelegationGrantedEvent was emitted with the correct payload
+    // (topic "DelegationGranted" + stream_id/recipient/delegate).
+    let expected = DelegationGrantedEvent {
+        stream_id,
+        recipient: recipient.clone(),
+        delegate: delegate.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    let events = env.events().all();
+    assert!(
+        events.events().iter().any(|e| *e == expected),
+        "expected DelegationGrantedEvent to be emitted"
+    );
 }
 
 #[test]
@@ -720,8 +735,9 @@ fn test_revoke_delegate() {
     let retrieved_delegate = client.get_delegate(&stream_id);
     assert_eq!(retrieved_delegate, None);
 
-    // Verify delegation was set and revoked correctly
-    // (Event assertions removed - Events trait captures differently in host)
+    // (No event assertion here: the test ends with a get_delegate read, which
+    // clears the event buffer, so this test's snapshot holds no events. The
+    // DelegationGrantedEvent payload is asserted in test_delegate_withdraw.)
 }
 
 #[test]
@@ -801,8 +817,8 @@ fn test_overwrite_delegate() {
     client.set_delegate(&stream_id, &delegate2);
     assert_eq!(client.get_delegate(&stream_id), Some(delegate2.clone()));
 
-    // Verify overwrite was successful
-    // (Event assertions removed - Events trait captures differently in host)
+    // (No event assertion here: the test ends with a get_delegate read, which
+    // clears the event buffer, so this test's snapshot holds no events.)
 }
 
 #[test]
@@ -1206,13 +1222,22 @@ fn test_stream_paused_event_emitted() {
         &100,
     );
 
-    // Pause the stream
+    // Pause the stream (last contract invocation so the snapshot captures the
+    // event; any read after this would clear the event buffer)
     client.pause_stream(&stream_id);
 
-    // Verify stream status
-    let stream = client.get_stream(&stream_id);
-    assert_eq!(stream.status, StreamStatus::Paused);
-    assert!(stream.paused_at.is_some());
+    // Verify the StreamPausedEvent was emitted with the correct payload
+    // (topic "StreamPaused" + stream_id/paused_at).
+    let expected = StreamPausedEvent {
+        stream_id,
+        paused_at: env.ledger().timestamp(),
+    }
+    .to_xdr(&env, &contract_id);
+    let events = env.events().all();
+    assert!(
+        events.events().iter().any(|e| *e == expected),
+        "expected StreamPausedEvent to be emitted"
+    );
 }
 
 
@@ -1249,18 +1274,28 @@ fn test_stream_resumed_event_emitted() {
 
     // Pause the stream
     client.pause_stream(&stream_id);
+    let paused_at = env.ledger().timestamp();
 
     // Advance time
     env.ledger().set_timestamp(10);
 
-    // Resume the stream
+    // Resume the stream (last contract invocation so the snapshot captures the
+    // event; any read after this would clear the event buffer)
     client.resume_stream(&stream_id);
 
-    // Verify stream status
-    let stream = client.get_stream(&stream_id);
-    assert_eq!(stream.status, StreamStatus::Active);
-    assert!(stream.paused_at.is_none());
-
+    // Verify the StreamResumedEvent was emitted with the correct payload
+    // (topic "StreamResumed" + stream_id/resumed_at/paused_duration).
+    let expected = StreamResumedEvent {
+        stream_id,
+        resumed_at: env.ledger().timestamp(),
+        paused_duration: 10u64.saturating_sub(paused_at),
+    }
+    .to_xdr(&env, &contract_id);
+    let events = env.events().all();
+    assert!(
+        events.events().iter().any(|e| *e == expected),
+        "expected StreamResumedEvent to be emitted"
+    );
 }
 
 
@@ -1911,11 +1946,24 @@ fn test_withdraw_after_pause_and_resume() {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (client, _, _, _, _, _, _) = setup_paused_contract(&env);
+        let (client, contract_id, admin, _, _, _, _) = setup_paused_contract(&env);
+
+        // emergency_pause is the last contract invocation so the snapshot
+        // captures the event
         client.emergency_pause();
 
+        // Verify the EmergencyPausedEvent was emitted with the correct payload
+        // (topic "EmergencyPaused" + paused_by/paused_at).
+        let expected = EmergencyPausedEvent {
+            paused_by: admin,
+            paused_at: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
         let events = env.events().all();
-        assert!(events.events().len() > 0);
+        assert!(
+            events.events().iter().any(|e| *e == expected),
+            "expected EmergencyPausedEvent to be emitted"
+        );
     }
 
     /// `emergency_unpause` emits the correct event.
@@ -1924,12 +1972,26 @@ fn test_withdraw_after_pause_and_resume() {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (client, _, _, _, _, _, _) = setup_paused_contract(&env);
+        let (client, contract_id, admin, _, _, _, _) = setup_paused_contract(&env);
+
         client.emergency_pause();
+
+        // emergency_unpause is the last contract invocation so the snapshot
+        // captures the event
         client.emergency_unpause();
 
+        // Verify the EmergencyUnpausedEvent was emitted with the correct payload
+        // (topic "EmergencyUnpaused" + unpaused_by/unpaused_at).
+        let expected = EmergencyUnpausedEvent {
+            unpaused_by: admin,
+            unpaused_at: env.ledger().timestamp(),
+        }
+        .to_xdr(&env, &contract_id);
         let events = env.events().all();
-        assert!(events.events().len() > 0);
+        assert!(
+            events.events().iter().any(|e| *e == expected),
+            "expected EmergencyUnpausedEvent to be emitted"
+        );
     }
 
     /// Double-pause is rejected with `AlreadyPaused` (error code 18).
