@@ -395,6 +395,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "cliff_duration"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "end_time"
                     },
                     "val": {

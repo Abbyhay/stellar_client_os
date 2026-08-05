@@ -79,7 +79,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-              "function_name": "create_stream",
+              "function_name": "create_stream_with_cliff",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -101,6 +101,9 @@
                 },
                 {
                   "u64": "100"
+                },
+                {
+                  "u64": "30"
                 }
               ]
             }
@@ -130,12 +133,52 @@
         }
       ]
     ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "function_name": "pause_stream",
+              "args": [
+                {
+                  "u64": "1"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "function_name": "resume_stream",
+              "args": [
+                {
+                  "u64": "1"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [],
     []
   ],
   "ledger": {
     "protocol_version": 25,
     "sequence_number": 0,
-    "timestamp": 0,
+    "timestamp": 80,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -232,6 +275,46 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
               "key": {
                 "ledger_key_nonce": {
+                  "nonce": "2032731177588607455"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "4270020994084947596"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+              "key": {
+                "ledger_key_nonce": {
                   "nonce": "4837995959683129791"
                 }
               },
@@ -274,7 +357,7 @@
                       "symbol": "last_activity"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "60"
                     }
                   },
                   {
@@ -290,7 +373,7 @@
                       "symbol": "pause_count"
                     },
                     "val": {
-                      "u32": 0
+                      "u32": 1
                     }
                   },
                   {
@@ -358,7 +441,7 @@
                       "symbol": "cliff_duration"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "30"
                     }
                   },
                   {
@@ -366,7 +449,7 @@
                       "symbol": "end_time"
                     },
                     "val": {
-                      "u64": "100"
+                      "u64": "140"
                     }
                   },
                   {
@@ -440,7 +523,7 @@
                       "symbol": "total_paused_duration"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "40"
                     }
                   },
                   {

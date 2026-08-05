@@ -79,7 +79,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-              "function_name": "create_stream",
+              "function_name": "create_stream_with_cliff",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -101,6 +101,9 @@
                 },
                 {
                   "u64": "100"
+                },
+                {
+                  "u64": "20"
                 }
               ]
             }
@@ -130,12 +133,15 @@
         }
       ]
     ],
+    [],
+    [],
+    [],
     []
   ],
   "ledger": {
     "protocol_version": 25,
     "sequence_number": 0,
-    "timestamp": 0,
+    "timestamp": 100,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -358,7 +364,7 @@
                       "symbol": "cliff_duration"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "20"
                     }
                   },
                   {
