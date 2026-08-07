@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useState, useRef, useEffect } from "react";
 import { LogOut } from "lucide-react";
 import { useWallet } from "@/providers/StellarWalletProvider";
+import { WalletStatus } from "@/components/molecules/WalletStatus";
 
 const ArrowDownIcon = ({
   className = "text-white/70",
@@ -26,14 +27,10 @@ const ArrowDownIcon = ({
 );
 
 export function ConnectButton() {
-  const { isConnected, address, openModal, disconnect } = useWallet();
+  const { isConnected, isLocked, address, openModal, disconnect } = useWallet();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const [mounted, setMounted] = useState(true);
   const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -59,6 +56,11 @@ export function ConnectButton() {
   };
 
   const handleDisconnect = async () => {
+    if (document.body.dataset.formDirty === 'true') {
+      if (!window.confirm("You have unsaved changes. Are you sure you want to disconnect? All form inputs will be lost.")) {
+        return;
+      }
+    }
     try {
       await disconnect();
       setDropdownOpen(false);
@@ -119,6 +121,11 @@ export function ConnectButton() {
         </AnimatePresence>
       </div>
     );
+  }
+
+  // Locked extension wallet — show Locked badge instead of generic Connect CTA.
+  if (isLocked) {
+    return <WalletStatus />;
   }
 
   return (
