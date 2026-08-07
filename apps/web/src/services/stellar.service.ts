@@ -12,14 +12,11 @@
  */
 
 import {
-  NativeBalance,
   Transaction,
   FeeBumpTransaction,
   Keypair,
   TransactionBuilder,
   Operation,
-  Asset,
-  Memo,
   Networks,
   xdr,
   Address,
@@ -44,7 +41,6 @@ import type {
 } from './types';
 import {
   StellarError,
-  NetworkError,
   TransactionError,
   TransactionTimeoutError,
   ContractError,
@@ -61,21 +57,6 @@ import { getStellarServerOptions } from '@/utils/rpc-connection-options';
 const DEFAULT_TIMEOUT = 30; // seconds
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_BASE_FEE = '100'; // stroops
-
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-function allowLocalHttp(url: string): boolean {
-  if (process.env.NODE_ENV === 'production') {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
-  } catch {
-    return false;
-  }
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -124,11 +105,11 @@ export class StellarService {
       try {
         const account = await withAbortSignal(this.horizonServer.loadAccount(address), signal);
 
-        const balances: AccountBalance[] = account.balances.map((bal: Horizon.BalanceLine) => ({
+        const balances: AccountBalance[] = account.balances.map((bal) => ({
           balance: bal.balance,
           assetType: bal.asset_type,
-          assetCode: 'asset_code' in bal ? (bal as Horizon.BalanceLineAsset).asset_code : undefined,
-          assetIssuer: 'asset_issuer' in bal ? (bal as Horizon.BalanceLineAsset).asset_issuer : undefined,
+          assetCode: 'asset_code' in bal ? bal.asset_code : undefined,
+          assetIssuer: 'asset_issuer' in bal ? bal.asset_issuer : undefined,
         }));
 
         return {
@@ -684,7 +665,7 @@ export class StellarService {
       let sourceAddress: string;
       try {
         const accountResponse = await this.rpcServer.getAccount(contractId);
-        sourceAddress = accountResponse.id;
+        sourceAddress = accountResponse.accountId();
       } catch {
         // Fallback for contract IDs or if getAccount fails
         sourceAddress = contractId;
@@ -943,10 +924,10 @@ export class StellarService {
       sender: String(result.sender),
       recipient: String(result.recipient),
       token: String(result.token),
-      totalAmount: BigInt((result.total_amount ?? result.totalAmount ?? 0) as any),
-      withdrawnAmount: BigInt((result.withdrawn_amount ?? result.withdrawnAmount ?? 0) as any),
-      startTime: BigInt((result.start_time ?? result.startTime ?? 0) as any),
-      endTime: BigInt((result.end_time ?? result.endTime ?? 0) as any),
+      totalAmount: BigInt(String(result.total_amount ?? result.totalAmount ?? 0)),
+      withdrawnAmount: BigInt(String(result.withdrawn_amount ?? result.withdrawnAmount ?? 0)),
+      startTime: BigInt(String(result.start_time ?? result.startTime ?? 0)),
+      endTime: BigInt(String(result.end_time ?? result.endTime ?? 0)),
       status: statusMap[String(result.status)] || 'Active',
     };
   }

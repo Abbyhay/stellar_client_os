@@ -92,8 +92,10 @@ export function WalletModal() {
           return;
         }
       }
-    if (activeSelection && !isConnecting) {
-      await connect(activeSelection);
+
+      if (activeSelection && !isConnecting) {
+        await connect(activeSelection);
+      }
     }
   };
 

@@ -30,6 +30,15 @@ export type ConnectionStatus =
   | "disconnecting"
   | "locked";
 
+const WALLET_INSTALL_URL: Partial<Record<WalletId, string>> = {
+  freighter: "https://freighter.app/",
+  xbull: "https://xbull.app/",
+  rabet: "https://rabet.io/",
+  albedo: "https://albedo.link/",
+  lobstr: "https://lobstr.co/",
+  rango: "https://app.rango.exchange/",
+};
+
 interface WalletContextType {
   connect: (walletId: WalletId) => Promise<void>;
   disconnect: () => Promise<void>;
@@ -68,7 +77,7 @@ function loadPersistedSession(): {
     return { address: null, walletId: null, network: null };
   }
   const savedAddress = safeGetItem("stellar_wallet_address");
-  const savedWalletId = safeGetItem("stellar_wallet_id");
+  const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
   const savedNetwork = safeGetItem("stellar_wallet_network") as WalletNetwork | null;
 
   if (
@@ -100,13 +109,6 @@ export const StellarWalletProvider = ({
     // correctly reflects the pending auto-reconnect verification.
     if (savedAddress && savedWalletId && savedNetwork) {
       return "connecting";
-    if (typeof window === 'undefined') return "idle";
-    const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
-    const savedNetwork = safeGetItem("stellar_wallet_network");
-    console.log('Lazy init connectionStatus:', { savedAddress, savedWalletId, savedNetwork });
-    if (savedAddress && isValidStellarAddress(savedAddress) && savedWalletId && savedNetwork === WalletNetwork.TESTNET) {
-      return "connected";
     }
     return "idle";
   });
@@ -117,15 +119,6 @@ export const StellarWalletProvider = ({
     // Restore the network that was active when the user last connected so the
     // kit is initialised with the right network passphrase immediately.
     return loadPersistedSession().network ?? WalletNetwork.TESTNET;
-    if (typeof window === 'undefined') return null;
-    const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
-    const savedNetwork = safeGetItem("stellar_wallet_network");
-    console.log('Lazy init selectedWalletId:', { savedWalletId, savedNetwork });
-    if (savedNetwork === WalletNetwork.TESTNET && savedAddress && isValidStellarAddress(savedAddress)) {
-      return savedWalletId as WalletId | null;
-    }
-    return null;
   });
   const [kit, setKit] = useState<StellarWalletsKit | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -151,10 +144,6 @@ export const StellarWalletProvider = ({
     // here we confirm the extension responds and either promote to "connected"
     // or clear stale state when it no longer does.
     const { address: savedAddress, walletId: savedWalletId, network: savedNetwork } = loadPersistedSession();
-    // RESTORE SESSION
-    const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
-    const savedNetwork = safeGetItem("stellar_wallet_network");
 
     if (savedAddress && savedWalletId && savedNetwork) {
       if (savedNetwork !== network) {
@@ -192,7 +181,7 @@ export const StellarWalletProvider = ({
           if (cancelled) return;
           // Wallet is locked, removed, or rejected the request — clear stale state.
           safeRemoveItem("stellar_wallet_address");
-          safeRemoveItem("stellar_wallet_id");
+          safeRemoveItem("@fundable/web:selected_wallet");
           safeRemoveItem("stellar_wallet_network");
           setAddress(null);
           setSelectedWalletId(null);
@@ -266,15 +255,6 @@ export const StellarWalletProvider = ({
     { id: "rabet", name: "Rabet", icon: "/icons/rabet.png" },
     { id: "lobstr", name: "Lobstr", icon: "/icons/lobstr.png" },
   ];
-
-  const WALLET_INSTALL_URL: Partial<Record<WalletId, string>> = {
-    freighter: "https://freighter.app/",
-    xbull: "https://xbull.app/",
-    rabet: "https://rabet.io/",
-    albedo: "https://albedo.link/",
-    lobstr: "https://lobstr.co/",
-    rango: "https://app.rango.exchange/",
-  };
 
   const connect = useCallback(async (walletId: WalletId) => {
     if (!kit) return;

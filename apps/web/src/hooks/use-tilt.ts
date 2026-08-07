@@ -17,8 +17,20 @@
  * ```
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
+
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+function subscribeReducedMotion(onStoreChange: () => void): () => void {
+  const mq = window.matchMedia(REDUCED_MOTION_QUERY);
+  mq.addEventListener("change", onStoreChange);
+  return () => mq.removeEventListener("change", onStoreChange);
+}
+
+function getReducedMotionSnapshot(): boolean {
+  return window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
 
 export interface UseTiltOptions {
   /** Maximum tilt angle in degrees. Default: 12 */
@@ -66,17 +78,12 @@ export function useTilt(options: UseTiltOptions = {}): TiltState {
   const [rotateY, setRotateY] = useState(0);
   const [glareAngle, setGlareAngle] = useState(0);
   const [glareOpacity, setGlareOpacity] = useState(0);
-  const [prefersReduced, setPrefersReduced] = useState(false);
-
-  // Detect prefers-reduced-motion
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setPrefersReduced(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setPrefersReduced(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
+  // Detect prefers-reduced-motion (external store — no setState in effects)
+  const prefersReduced = useSyncExternalStore(
+    subscribeReducedMotion,
+    getReducedMotionSnapshot,
+    () => false,
+  );
 
   const isActive = !disabled && !prefersReduced;
 

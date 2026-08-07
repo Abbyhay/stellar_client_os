@@ -1,7 +1,7 @@
 "use client";
 
 import { Info } from "lucide-react";
-import { SUPPORTED_TOKENS, PaymentStreamFormData } from "@/lib/validations";
+import { SUPPORTED_TOKENS, PaymentStreamFormData, getTokenSymbol } from "@/lib/validations";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface StreamFormData {

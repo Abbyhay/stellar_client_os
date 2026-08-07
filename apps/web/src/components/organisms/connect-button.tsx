@@ -29,7 +29,6 @@ const ArrowDownIcon = ({
 export function ConnectButton() {
   const { isConnected, isLocked, address, openModal, disconnect } = useWallet();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [mounted, setMounted] = useState(true);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown when clicking outside
@@ -46,10 +45,6 @@ export function ConnectButton() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  if (!mounted) {
-    return <div className="w-[140px] h-[36px]" aria-hidden="true" />;
-  }
-
   const formatAddress = (addr: string) => {
     if (!addr) return "";
     return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
@@ -64,7 +59,7 @@ export function ConnectButton() {
     try {
       await disconnect();
       setDropdownOpen(false);
-    } catch (error) {
+    } catch {
       // Silently fail disconnect
     }
   };
