@@ -36,6 +36,7 @@ async function fetchStreams(
     const mockStreams: StreamRecord[] = [
         {
             id: "stream_001_abc123def456",
+            contractStreamId: 1,
             sender: "GCKFBEIYTKP5RDBQMTVVALONAOPBXICYQPGJGQONRRGZRWCXJWW2BVN7",
             recipient: "GDQJUTQYK2MQX2VGDR2FYWLIYAQIEGXTQVTFEMGH2BEWFG4BRUY4CKI7",
             token: "USDC",
@@ -50,6 +51,7 @@ async function fetchStreams(
         },
         {
             id: "stream_002_xyz789ghi012",
+            contractStreamId: 2,
             sender: "GDQJUTQYK2MQX2VGDR2FYWLIYAQIEGXTQVTFEMGH2BEWFG4BRUY4CKI7",
             recipient: "GCKFBEIYTKP5RDBQMTVVALONAOPBXICYQPGJGQONRRGZRWCXJWW2BVN7",
             token: "XLM",
