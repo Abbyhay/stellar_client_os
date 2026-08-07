@@ -136,18 +136,12 @@ export class StellarService {
    * @returns true if account exists
    */
   async accountExists(address: string): Promise<boolean> {
-    return withRetry(async () => {
-      try {
-        await this.horizonServer.loadAccount(address);
-        return true;
-      } catch (error) {
-        const err = error as Error & { response?: { status?: number } };
-        if (err?.response?.status === 404) {
-          return false;
-        }
-        throw error;
-      }
-    }, { maxRetries: this.maxRetries });
+    try {
+      await this.horizonServer.loadAccount(address);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ============================================
