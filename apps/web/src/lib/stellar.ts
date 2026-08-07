@@ -57,12 +57,6 @@ export class StellarService {
       // 2. Get the user's keypair
       // 3. Build and submit the actual transaction to the smart contract
 
-      // Convert duration to seconds (using parseFloat to handle fractional durations)
-      const durationValue = parseFloat(formData.duration)
-      const durationInSeconds = formData.durationUnit === 'days'
-        ? durationValue * 24 * 60 * 60
-        : durationValue * 60 * 60
-
       // Get token info
       const selectedToken = SUPPORTED_TOKENS.find(token => token.value === formData.token)
       if (!selectedToken) {
@@ -94,7 +88,7 @@ export class StellarService {
     try {
       const account = await server.loadAccount(publicKey)
       return account
-    } catch (error) {
+    } catch {
       throw new Error('Failed to load account information')
     }
   }

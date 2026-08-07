@@ -42,6 +42,7 @@ vi.mock("@creit.tech/stellar-wallets-kit", () => {
       getAddress: mockGetAddress,
       setWallet: mockSetWallet,
       signTransaction: mockSignTransaction,
+      disconnect: vi.fn().mockResolvedValue(undefined),
     })),
     allowAllModules: vi.fn().mockReturnValue([]),
   };
@@ -97,7 +98,7 @@ function seedStorage(
   network = WalletNetwork.TESTNET,
 ) {
   store["stellar_wallet_address"] = address;
-  store["stellar_wallet_id"] = walletId;
+  store["@fundable/web:selected_wallet"] = walletId;
   store["stellar_wallet_network"] = network;
 }
 
@@ -178,7 +179,7 @@ describe("StellarWalletProvider – wallet state persistence on refresh", () => 
 
     it("ignores a stored address that fails Stellar address validation", async () => {
       store["stellar_wallet_address"] = "not-a-valid-stellar-address";
-      store["stellar_wallet_id"] = WALLET_ID;
+      store["@fundable/web:selected_wallet"] = WALLET_ID;
       store["stellar_wallet_network"] = WalletNetwork.TESTNET;
 
       const { result } = renderHook(() => useWallet(), { wrapper: Wrapper });
@@ -190,7 +191,7 @@ describe("StellarWalletProvider – wallet state persistence on refresh", () => 
 
     it("ignores a stored network value that is not a valid WalletNetwork", async () => {
       store["stellar_wallet_address"] = VALID_ADDRESS;
-      store["stellar_wallet_id"] = WALLET_ID;
+      store["@fundable/web:selected_wallet"] = WALLET_ID;
       store["stellar_wallet_network"] = "BOGUS_NETWORK";
 
       const { result } = renderHook(() => useWallet(), { wrapper: Wrapper });
@@ -251,7 +252,7 @@ describe("StellarWalletProvider – wallet state persistence on refresh", () => 
         expect(store["stellar_wallet_address"]).toBeUndefined();
       });
 
-      expect(store["stellar_wallet_id"]).toBeUndefined();
+      expect(store["@fundable/web:selected_wallet"]).toBeUndefined();
       expect(store["stellar_wallet_network"]).toBeUndefined();
     });
 
@@ -303,7 +304,7 @@ describe("StellarWalletProvider – wallet state persistence on refresh", () => 
       expect(result.current.isConnected).toBe(false);
       expect(result.current.connectionStatus).toBe("idle");
       expect(store["stellar_wallet_address"]).toBeUndefined();
-      expect(store["stellar_wallet_id"]).toBeUndefined();
+      expect(store["@fundable/web:selected_wallet"]).toBeUndefined();
       expect(store["stellar_wallet_network"]).toBeUndefined();
     });
   });
@@ -324,7 +325,7 @@ describe("StellarWalletProvider – wallet state persistence on refresh", () => 
       expect(result.current.address).toBe(VALID_ADDRESS);
       expect(result.current.isConnected).toBe(true);
       expect(store["stellar_wallet_address"]).toBe(VALID_ADDRESS);
-      expect(store["stellar_wallet_id"]).toBe(WALLET_ID);
+      expect(store["@fundable/web:selected_wallet"]).toBe(WALLET_ID);
       expect(store["stellar_wallet_network"]).toBe(WalletNetwork.TESTNET);
     });
   });

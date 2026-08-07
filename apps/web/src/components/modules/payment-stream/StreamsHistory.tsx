@@ -10,7 +10,6 @@ import StreamsTable from "./StreamsTable";
 import { capitalizeWord } from "@/lib/utils";
 import { paymentStreamStatus, validPageLimits } from "@/lib/constants";
 import AppSelect from "@/components/molecules/AppSelect";
-import StreamsTableSkeleton from "./StreamsTableSkeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { streamColumns } from "./streamColumns";
 import StreamActionsCell from "./StreamActionsCell";

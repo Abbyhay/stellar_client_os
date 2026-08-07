@@ -30,6 +30,15 @@ export type ConnectionStatus =
   | "disconnecting"
   | "locked";
 
+const WALLET_INSTALL_URL: Partial<Record<WalletId, string>> = {
+  freighter: "https://freighter.app/",
+  xbull: "https://xbull.app/",
+  rabet: "https://rabet.io/",
+  albedo: "https://albedo.link/",
+  lobstr: "https://lobstr.co/",
+  rango: "https://app.rango.exchange/",
+};
+
 interface WalletContextType {
   connect: (walletId: WalletId) => Promise<void>;
   disconnect: () => Promise<void>;
@@ -68,7 +77,7 @@ function loadPersistedSession(): {
     return { address: null, walletId: null, network: null };
   }
   const savedAddress = safeGetItem("stellar_wallet_address");
-  const savedWalletId = safeGetItem("stellar_wallet_id");
+  const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
   const savedNetwork = safeGetItem("stellar_wallet_network") as WalletNetwork | null;
 
   if (
@@ -206,7 +215,7 @@ export const StellarWalletProvider = ({
           if (cancelled) return;
           // Wallet is locked, removed, or rejected the request — clear stale state.
           safeRemoveItem("stellar_wallet_address");
-          safeRemoveItem("stellar_wallet_id");
+          safeRemoveItem("@fundable/web:selected_wallet");
           safeRemoveItem("stellar_wallet_network");
           setAddress(null);
           setSelectedWalletId(null);
@@ -280,15 +289,6 @@ export const StellarWalletProvider = ({
     { id: "rabet", name: "Rabet", icon: "/icons/rabet.png" },
     { id: "lobstr", name: "Lobstr", icon: "/icons/lobstr.png" },
   ];
-
-  const WALLET_INSTALL_URL: Partial<Record<WalletId, string>> = {
-    freighter: "https://freighter.app/",
-    xbull: "https://xbull.app/",
-    rabet: "https://rabet.io/",
-    albedo: "https://albedo.link/",
-    lobstr: "https://lobstr.co/",
-    rango: "https://app.rango.exchange/",
-  };
 
   const connect = useCallback(async (walletId: WalletId) => {
     if (!kit) return;
