@@ -92,6 +92,14 @@ export const StellarWalletProvider = ({
   // All three pieces of state are derived from the same storage snapshot so
   // they are always consistent with one another.
   const [address, setAddress] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedNetwork = safeGetItem("stellar_wallet_network");
+    console.log('Lazy init address:', { savedAddress, savedNetwork });
+    if (savedNetwork === WalletNetwork.TESTNET && savedAddress && isValidStellarAddress(savedAddress)) {
+      return savedAddress;
+    }
+    return null;
     return loadPersistedSession().address;
   });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(() => {
@@ -101,6 +109,8 @@ export const StellarWalletProvider = ({
     if (savedAddress && savedWalletId && savedNetwork) {
       return "connecting";
     if (typeof window === 'undefined') return "idle";
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedWalletId = safeGetItem("stellar_wallet_id");
     const savedAddress = safeGetItem("stellar_wallet_address");
     const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
     const savedNetwork = safeGetItem("stellar_wallet_network");
@@ -118,6 +128,8 @@ export const StellarWalletProvider = ({
     // kit is initialised with the right network passphrase immediately.
     return loadPersistedSession().network ?? WalletNetwork.TESTNET;
     if (typeof window === 'undefined') return null;
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedWalletId = safeGetItem("stellar_wallet_id");
     const savedAddress = safeGetItem("stellar_wallet_address");
     const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
     const savedNetwork = safeGetItem("stellar_wallet_network");
@@ -152,6 +164,8 @@ export const StellarWalletProvider = ({
     // or clear stale state when it no longer does.
     const { address: savedAddress, walletId: savedWalletId, network: savedNetwork } = loadPersistedSession();
     // RESTORE SESSION
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedWalletId = safeGetItem("stellar_wallet_id");
     const savedAddress = safeGetItem("stellar_wallet_address");
     const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
     const savedNetwork = safeGetItem("stellar_wallet_network");

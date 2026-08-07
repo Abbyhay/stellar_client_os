@@ -1,4 +1,6 @@
 "use client";
+import { motion } from "framer-motion";
+import { Wallet, Check } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, Loader2 } from "lucide-react";
 import React from "react";
@@ -97,6 +99,20 @@ export function WalletModal() {
     }
   };
 
+  // Radix restores focus to whichever element opened the dialog. After a
+  // successful connect that trigger unmounts (ConnectButton swaps to its
+  // connected state), so the default restore targets a detached node and focus
+  // falls back to <body> — the keyboard user is dropped outside the app's tab
+  // order. Redirect to whichever wallet trigger is currently mounted instead.
+  const handleCloseAutoFocus = React.useCallback((event: Event) => {
+    const walletTrigger = document.querySelector<HTMLElement>(
+      "[data-wallet-trigger]",
+    );
+    if (walletTrigger) {
+      event.preventDefault();
+      walletTrigger.focus();
+    }
+  }, []);
   const handleKeyDown = (e: React.KeyboardEvent, walletId: WalletId) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -107,6 +123,14 @@ export function WalletModal() {
   return (
     <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
       <DialogContent
+        onCloseAutoFocus={handleCloseAutoFocus}
+        className="max-w-md p-1 overflow-hidden border-white/10 bg-[#0F1621] rounded-3xl shadow-2xl"
+      >
+        {/* Glossy overlay effect */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-linear-to-br from-white/5 to-transparent pointer-events-none"
+        />
         className="w-full max-w-sm sm:max-w-md p-1 overflow-hidden border-white/10 bg-[#0F1621] rounded-3xl shadow-2xl mx-4 sm:mx-auto"
         aria-modal="true"
       >
@@ -137,6 +161,8 @@ export function WalletModal() {
               return (
                 <button
                   key={wallet.id}
+                  type="button"
+                  aria-pressed={isSelected}
                   role="radio"
                   aria-checked={isSelected}
                   onClick={() => setActiveSelection(wallet.id)}
@@ -190,6 +216,7 @@ export function WalletModal() {
 
           {/* Connect button */}
           <button
+            type="button"
             onClick={handleConnectClick}
             disabled={!activeSelection || isConnecting}
             aria-disabled={!activeSelection || isConnecting}
