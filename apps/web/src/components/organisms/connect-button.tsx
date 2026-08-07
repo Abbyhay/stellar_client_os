@@ -69,6 +69,7 @@ export function ConnectButton() {
       <div className="relative" ref={dropdownRef}>
         <motion.button
           type="button"
+          data-wallet-trigger
           aria-expanded={dropdownOpen}
           aria-haspopup="menu"
           aria-label={`Wallet connected: ${formatAddress(address)}. Click to open wallet menu`}
@@ -125,6 +126,7 @@ export function ConnectButton() {
   return (
     <motion.button
       type="button"
+      data-wallet-trigger
       aria-label="Connect your Stellar wallet"
       whileHover={{ scale: 1.02 }}
       whileTap={{ scale: 0.98 }}
