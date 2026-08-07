@@ -4,7 +4,9 @@ import { SOROBAN_RPC_URL, NETWORK_PASSPHRASE } from '@/lib/constants';
 import { env } from '@/lib/env';
 import { throwIfAborted } from '@/utils/retry';
 import { StellarService, type Stream as ServiceStream, type AccountInfo } from '@/services';
-import { PaymentStreamClient, DistributorClient, createBatches } from '@fundable/sdk';
+import { PaymentStreamClient } from '../../../../packages/sdk/src/PaymentStreamClient';
+import { DistributorClient } from '../../../../packages/sdk/src/DistributorClient';
+import { createBatches } from '../../../../packages/sdk/src/utils/batchDistribution';
 import { Stream, StreamStatus } from '../types';
 
 type WalletSigner = (xdr: string) => Promise<string>;
@@ -197,7 +199,7 @@ export async function fetchAccountInfo(address: string, signal?: AbortSignal): P
     throwIfAborted(signal);
     try {
         return await stellarService.getAccount(address, signal);
-    } catch (e) {
+    } catch {
         return null;
     }
 }

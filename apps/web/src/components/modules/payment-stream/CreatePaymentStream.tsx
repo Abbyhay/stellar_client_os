@@ -79,11 +79,7 @@ const CreatePaymentStream = () => {
     distributor: DISTRIBUTOR_CONTRACT_ID
   }), []);
 
-  const selectedToken = useMemo(() => {
-    return SUPPORTED_TOKENS.find((t) => t.value === streamData.token);
-  }, [streamData.token]);
-
-  const { balanceError, insufficientBalance } = useBalanceValidation(
+  const { error: balanceError, insufficientBalance } = useBalanceValidation(
     streamData.amount,
     streamData.token
   );
@@ -123,15 +119,7 @@ const CreatePaymentStream = () => {
     if (isConnected && address) {
       estimateFee(streamData, address);
     }
-  }, [
-    streamData.recipient,
-    streamData.amount,
-    streamData.token,
-    streamData.duration,
-    streamData.durationValue,
-    isConnected,
-    address
-  ]);
+  }, [estimateFee, streamData, isConnected, address]);
 
   const isFormDirty = useMemo(() => {
     return JSON.stringify(streamData) !== JSON.stringify(initialStreamData);
