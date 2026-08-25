@@ -228,7 +228,10 @@ const CreatePaymentStream = () => {
       );
 
       // Reset form
-      setStreamData(initialStreamData);
+      setStreamData({
+        ...initialStreamData,
+        token: tokenOptions[0]?.value || "XLM",
+      });
       setFormKey((k) => k + 1);
 
       // Invalidate streams queries
