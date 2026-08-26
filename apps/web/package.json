@@ -13,6 +13,7 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@sentry/nextjs": "^10.71.0",
     "@creit.tech/stellar-wallets-kit": "^1.9.5",
     "@graphql-tools/schema": "^10.0.7",
     "graphql": "^16.9.0",
