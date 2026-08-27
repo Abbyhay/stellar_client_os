@@ -13,6 +13,7 @@ export default defineConfig({
     trace: 'on-first-retry',
     // Inject mock wallet state into every page before scripts run
     storageState: undefined,
+    // @ts-expect-error — initScript is used by our custom fixture, not standard Playwright
     initScript: `
       window.stellarWallet = {
         address: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
