@@ -262,6 +262,31 @@ export async function ensureSchema(db: DbClient): Promise<void> {
       updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS sponsor_signups (
+      sponsor_address TEXT PRIMARY KEY,
+      signup_date     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS sponsorships (
+      id              BIGSERIAL PRIMARY KEY,
+      sponsor_address TEXT        NOT NULL REFERENCES sponsor_signups(sponsor_address),
+      stream_id       TEXT        NOT NULL,
+      amount          NUMERIC     NOT NULL,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_sponsorships_sponsor_address ON sponsorships(sponsor_address)
+  `);
+  
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_sponsorships_created_at ON sponsorships(created_at)
+  `);
 }
 
 /**
@@ -329,8 +354,28 @@ export async function insertEvents(
         ev.rawXdr,
       ]
     );
-    // pg returns rowCount for INSERT
-    if ((result as unknown as { rowCount: number }).rowCount > 0) inserted++;
+
+    if ((result as unknown as { rowCount: number }).rowCount > 0) {
+      inserted++;
+      
+      // If it's a stream creation, track the sponsor
+      if (ev.eventType === "stream_created" && ev.sender) {
+        // Upsert sponsor signup
+        await db.query(
+          `INSERT INTO sponsor_signups (sponsor_address)
+           VALUES ($1)
+           ON CONFLICT (sponsor_address) DO NOTHING`,
+          [ev.sender]
+        );
+
+        // Record the sponsorship
+        await db.query(
+          `INSERT INTO sponsorships (sponsor_address, stream_id, amount)
+           VALUES ($1, $2, $3)`,
+          [ev.sender, ev.streamId, ev.amount]
+        );
+      }
+    }
   }
   return inserted;
 }
