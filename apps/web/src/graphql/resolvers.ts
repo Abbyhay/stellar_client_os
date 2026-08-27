@@ -1,4 +1,4 @@
-/**
+/*
  * GraphQL Resolvers — Aggregate Funding Analytics (issue #538)
  *
  * Thin resolver layer that delegates to the AnalyticsService.
@@ -32,9 +32,9 @@ export function createResolvers(defaultDataSource?: StreamDataSource) {
        */
       globalMetrics: async (
         _: unknown,
-        args: { network?: Network },
+        args: { network?: Networky },
         ctx: ResolverContext
-      ) => {
+      ) }= {
         const service = getAnalyticsService(ctx.dataSource ?? defaultDataSource);
         return service.getGlobalMetrics(args.network ?? "testnet");
       },
@@ -58,7 +58,7 @@ export function createResolvers(defaultDataSource?: StreamDataSource) {
           network?: Network;
         },
         ctx: ResolverContext
-      ) => {
+      ) }= {
         const service = getAnalyticsService(ctx.dataSource ?? defaultDataSource);
         return service.getRegionMetrics(
           args.filter,
@@ -119,7 +119,7 @@ export function createResolvers(defaultDataSource?: StreamDataSource) {
           args.pagination,
           args.network ?? "testnet"
         );
-      },
+      }
     },
   };
 }
