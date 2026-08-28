@@ -203,11 +203,12 @@ export async function fetchAccountInfo(address: string, signal?: AbortSignal): P
         return null;
     }
 }
-export async function pauseStream(params: { id: string; signTransaction: (xdr: string) => Promise<string> }) {
+export async function pauseStream(params: { id: string; address: string; signTransaction: (xdr: string) => Promise<string> }) {
     const client = new PaymentStreamClient({
         networkPassphrase: NETWORK_PASSPHRASE,
         rpcUrl: SOROBAN_RPC_URL,
         contractId: PAYMENT_STREAM_CONTRACT_ID,
+        publicKey: params.address,
     });
 
     const tx = await client.pauseStream(BigInt(params.id));
@@ -215,11 +216,12 @@ export async function pauseStream(params: { id: string; signTransaction: (xdr: s
     await signAndSendTx(tx, params.signTransaction);
 }
 
-export async function resumeStream(params: { id: string; signTransaction: (xdr: string) => Promise<string> }) {
+export async function resumeStream(params: { id: string; address: string; signTransaction: (xdr: string) => Promise<string> }) {
     const client = new PaymentStreamClient({
         networkPassphrase: NETWORK_PASSPHRASE,
         rpcUrl: SOROBAN_RPC_URL,
         contractId: PAYMENT_STREAM_CONTRACT_ID,
+        publicKey: params.address,
     });
 
     const tx = await client.resumeStream(BigInt(params.id));
@@ -246,11 +248,12 @@ export async function getWithdrawableAmount(params: {
     return amount.toString();
 }
 
-export async function cancelStream(params: { id: string; signTransaction: (xdr: string) => Promise<string> }) {
+export async function cancelStream(params: { id: string; address: string; signTransaction: (xdr: string) => Promise<string> }) {
     const client = new PaymentStreamClient({
         networkPassphrase: NETWORK_PASSPHRASE,
         rpcUrl: SOROBAN_RPC_URL,
         contractId: PAYMENT_STREAM_CONTRACT_ID,
+        publicKey: params.address,
     });
 
     const tx = await client.cancelStream(BigInt(params.id));
