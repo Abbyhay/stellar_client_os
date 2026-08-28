@@ -196,14 +196,6 @@ function MapClusterMarker({
       }}
       radius={isHovered ? radius + 3 : radius}
       eventHandlers={eventHandlers}
-      // react-leaflet v5's typings only allow leaflet-specific props, but the
-      // underlying SVG layer accepts extra DOM attributes. Keep the marker
-      // accessible (and covered by FundableMap tests) via a typed assertion.
-      {...({
-        "aria-label": `Cluster of ${cluster.count} fundable stream${cluster.count !== 1 ? "s" : ""}`,
-        role: "button",
-        tabIndex: 0,
-      } as unknown as Omit<React.ComponentProps<typeof CircleMarker>, "center">)}
     >
       <Popup>
         <div style={popupStyles.container}>

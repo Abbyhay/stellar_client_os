@@ -1,6 +1,6 @@
 "use client";
 import { motion, AnimatePresence } from "framer-motion";
-import { Check, Loader2 } from "lucide-react";
+import { Wallet, Check, Loader2 } from "lucide-react";
 import React from "react";
 import { useWallet, WalletId } from "@/providers/StellarWalletProvider";
 import {
@@ -131,6 +131,8 @@ export function WalletModal() {
           aria-hidden="true"
           className="absolute inset-0 bg-linear-to-br from-white/5 to-transparent pointer-events-none"
         />
+        {/* Glossy overlay */}
+        <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent pointer-events-none rounded-3xl" />
 
         <div className="relative bg-[#0F1621] rounded-[22px] p-5 sm:p-8 flex flex-col">
           {/* Header */}
