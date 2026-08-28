@@ -67,7 +67,7 @@ async function signAndSendTx<T>(
         }),
     });
 
-    return result.hash;
+    return (result as unknown as { hash: string }).hash;
 }
 
 function createPaymentStreamClient(publicKey: string): PaymentStreamClient {
