@@ -3,6 +3,7 @@ import DashboardOverview from "@/components/modules/dashboard/DashboardOverview"
 import FeatureCards from "@/components/modules/dashboard/FeatureCards";
 import { ImpactMapSection } from "@/components/modules/impact-map/ImpactMapSection";
 import ForestReportExport from "@/components/modules/dashboard/ForestReportExport";
+import { CampaignImpactCalculator } from "@/components/modules/impact/CampaignImpactCalculator";
 
 const DashboardPage = async () => {
     return (
@@ -11,6 +12,7 @@ const DashboardPage = async () => {
             <ForestReportExport />
             <DashboardOverview />
             <FeatureCards />
+            <CampaignImpactCalculator />
             <ImpactMapSection />
         </main>
     );
