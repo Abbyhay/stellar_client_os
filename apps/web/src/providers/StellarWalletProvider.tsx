@@ -101,14 +101,28 @@ export const StellarWalletProvider = ({
   // All three pieces of state are derived from the same storage snapshot so
   // they are always consistent with one another.
   const [address, setAddress] = useState<string | null>(() => {
-    return loadPersistedSession().address;
+    if (typeof window === 'undefined') return null;
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedNetwork = safeGetItem("stellar_wallet_network");
+    console.log('Lazy init address:', { savedAddress, savedNetwork });
+    if (savedNetwork === WalletNetwork.TESTNET && savedAddress && isValidStellarAddress(savedAddress)) {
+      return savedAddress;
+    }
+    return null;
   });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(() => {
-    const { address: savedAddress, walletId: savedWalletId, network: savedNetwork } = loadPersistedSession();
+    const persisted = loadPersistedSession();
     // Start as "connecting" when we have a persisted session so the UI
     // correctly reflects the pending auto-reconnect verification.
-    if (savedAddress && savedWalletId && savedNetwork) {
+    if (persisted.address && persisted.walletId && persisted.network) {
       return "connecting";
+    }
+    if (typeof window === "undefined") return "idle";
+    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedWalletId = safeGetItem("@fundable/web:selected_wallet") ?? safeGetItem("stellar_wallet_id");
+    const savedNetwork = safeGetItem("stellar_wallet_network");
+    if (savedAddress && isValidStellarAddress(savedAddress) && savedWalletId && savedNetwork === WalletNetwork.TESTNET) {
+      return "connected";
     }
     return "idle";
   });
@@ -143,7 +157,10 @@ export const StellarWalletProvider = ({
     // restored address/walletId from storage so the UI can render immediately;
     // here we confirm the extension responds and either promote to "connected"
     // or clear stale state when it no longer does.
-    const { address: savedAddress, walletId: savedWalletId, network: savedNetwork } = loadPersistedSession();
+    const persisted = loadPersistedSession();
+    const savedAddress = persisted.address ?? safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedWalletId = persisted.walletId ?? safeGetItem("@fundable/web:selected_wallet") ?? safeGetItem("stellar_wallet_id");
+    const savedNetwork = persisted.network ?? safeGetItem("stellar_wallet_network");
 
     if (savedAddress && savedWalletId && savedNetwork) {
       if (savedNetwork !== network) {
