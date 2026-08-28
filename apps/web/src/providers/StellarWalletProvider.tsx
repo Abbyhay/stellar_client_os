@@ -109,21 +109,18 @@ export const StellarWalletProvider = ({
       return savedAddress;
     }
     return null;
-    return loadPersistedSession().address;
   });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(() => {
-    const { address: savedAddress, walletId: savedWalletId, network: savedNetwork } = loadPersistedSession();
+    const persisted = loadPersistedSession();
     // Start as "connecting" when we have a persisted session so the UI
     // correctly reflects the pending auto-reconnect verification.
-    if (savedAddress && savedWalletId && savedNetwork) {
+    if (persisted.address && persisted.walletId && persisted.network) {
       return "connecting";
-    if (typeof window === 'undefined') return "idle";
+    }
+    if (typeof window === "undefined") return "idle";
     const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
-    const savedWalletId = safeGetItem("stellar_wallet_id");
-    const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
+    const savedWalletId = safeGetItem("@fundable/web:selected_wallet") ?? safeGetItem("stellar_wallet_id");
     const savedNetwork = safeGetItem("stellar_wallet_network");
-    console.log('Lazy init connectionStatus:', { savedAddress, savedWalletId, savedNetwork });
     if (savedAddress && isValidStellarAddress(savedAddress) && savedWalletId && savedNetwork === WalletNetwork.TESTNET) {
       return "connected";
     }
@@ -136,17 +133,6 @@ export const StellarWalletProvider = ({
     // Restore the network that was active when the user last connected so the
     // kit is initialised with the right network passphrase immediately.
     return loadPersistedSession().network ?? WalletNetwork.TESTNET;
-    if (typeof window === 'undefined') return null;
-    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
-    const savedWalletId = safeGetItem("stellar_wallet_id");
-    const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
-    const savedNetwork = safeGetItem("stellar_wallet_network");
-    console.log('Lazy init selectedWalletId:', { savedWalletId, savedNetwork });
-    if (savedNetwork === WalletNetwork.TESTNET && savedAddress && isValidStellarAddress(savedAddress)) {
-      return savedWalletId as WalletId | null;
-    }
-    return null;
   });
   const [kit, setKit] = useState<StellarWalletsKit | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -171,13 +157,10 @@ export const StellarWalletProvider = ({
     // restored address/walletId from storage so the UI can render immediately;
     // here we confirm the extension responds and either promote to "connected"
     // or clear stale state when it no longer does.
-    const { address: savedAddress, walletId: savedWalletId, network: savedNetwork } = loadPersistedSession();
-    // RESTORE SESSION
-    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
-    const savedWalletId = safeGetItem("stellar_wallet_id");
-    const savedAddress = safeGetItem("stellar_wallet_address");
-    const savedWalletId = safeGetItem("@fundable/web:selected_wallet");
-    const savedNetwork = safeGetItem("stellar_wallet_network");
+    const persisted = loadPersistedSession();
+    const savedAddress = persisted.address ?? safeGetItem("stellar_wallet_address")?.toUpperCase();
+    const savedWalletId = persisted.walletId ?? safeGetItem("@fundable/web:selected_wallet") ?? safeGetItem("stellar_wallet_id");
+    const savedNetwork = persisted.network ?? safeGetItem("stellar_wallet_network");
 
     if (savedAddress && savedWalletId && savedNetwork) {
       if (savedNetwork !== network) {
