@@ -22,6 +22,10 @@ pub enum DataKey {
     FeeCollector,
     /// Protocol fee rate in basis points (instance storage).
     FeeRate,
+    /// Insurance pool balance keyed by token address (instance storage).
+    InsurancePool(Address),
+    /// Insurance fee rate in basis points (instance storage).
+    InsuranceFeeRate,
     /// Full [`Campaign`] struct keyed by campaign ID (persistent storage).
     Campaign(u64),
     /// Per-contributor escrow balance keyed by `(campaign_id, contributor)`
@@ -42,6 +46,9 @@ pub enum CampaignStatus {
     Failed,
     /// Creator has already claimed the raised funds.
     Claimed,
+    /// Trees died during verification; sponsors are entitled to insurance
+    /// refunds from the insurance pool.
+    VerificationFailed,
 }
 
 /// Core campaign record stored on-chain.
@@ -170,6 +177,10 @@ pub enum Error {
     TargetExceeded = 16,
     /// The supplied deadline exceeds the maximum allowed duration of 180 days.
     DeadlineTooFar = 17,
+    /// The campaign is not in the `VerificationFailed` state.
+    CampaignNotVerificationFailed = 18,
+    /// The insurance pool fee rate exceeds the protocol maximum.
+    InsuranceFeeTooHigh = 19,
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +189,8 @@ pub enum Error {
 
 /// Maximum protocol fee: 500 basis points = 5 %.
 const MAX_FEE: u32 = 500;
+/// Maximum insurance pool fee: 500 basis points = 5 %.
+const MAX_INSURANCE_FEE: u32 = 500;
 /// Storage TTL threshold: ~30 days at 5 s/ledger.
 const LEDGER_THRESHOLD: u32 = 518_400;
 /// Storage TTL bump: ~31 days at 5 s/ledger.
@@ -212,12 +225,21 @@ impl CampaignFundingContract {
     /// # Errors
     /// * [`Error::AlreadyInitialized`] — if called a second time.
     /// * [`Error::FeeTooHigh`]         — if `fee_rate > 500`.
-    pub fn initialize(env: Env, admin: Address, fee_collector: Address, fee_rate: u32) {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        fee_collector: Address,
+        fee_rate: u32,
+        insurance_fee_rate: u32,
+    ) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
         if fee_rate > MAX_FEE {
             panic_with_error!(&env, Error::FeeTooHigh);
+        }
+        if insurance_fee_rate > MAX_INSURANCE_FEE {
+            panic_with_error!(&env, Error::InsuranceFeeTooHigh);
         }
         admin.require_auth();
 
@@ -225,6 +247,9 @@ impl CampaignFundingContract {
         env.storage().instance().set(&DataKey::CampaignCount, &0u64);
         env.storage().instance().set(&DataKey::FeeCollector, &fee_collector);
         env.storage().instance().set(&DataKey::FeeRate, &fee_rate);
+        env.storage()
+            .instance()
+            .set(&DataKey::InsuranceFeeRate, &insurance_fee_rate);
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
     }
 
@@ -266,6 +291,7 @@ impl CampaignFundingContract {
         target_amount: i128,
         min_target: i128,
         deadline: u64,
+        insurance_fee: i128,
     ) -> u64 {
         Self::assert_initialized(&env);
         creator.require_auth();
@@ -282,6 +308,23 @@ impl CampaignFundingContract {
         if deadline > env.ledger().timestamp() + MAX_CAMPAIGN_DURATION_SECONDS {
             panic_with_error!(&env, Error::DeadlineTooFar);
         }
+        if insurance_fee <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        // Transfer the insurance fee from the creator to the contract's
+        // insurance pool and record the pool balance.
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&creator, &env.current_contract_address(), &insurance_fee);
+
+        let pool_key = DataKey::InsurancePool(token.clone());
+        let mut pool_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&pool_key)
+            .unwrap_or(0);
+        pool_balance += insurance_fee;
+        env.storage().instance().set(&pool_key, &pool_balance);
 
         let mut count: u64 = env
             .storage()
@@ -318,6 +361,118 @@ impl CampaignFundingContract {
         );
 
         count
+    }
+
+    /// Mark a campaign as having lost its trees during verification.
+    ///
+    /// Only the contract admin can call this. Once a campaign is marked,
+    /// sponsors can claim refunds from the insurance pool.
+    ///
+    /// # Arguments
+    /// * `campaign_id` — ID of the campaign whose trees died.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`]        — contract not initialised.
+    /// * [`Error::Unauthorized`]          — caller is not the admin.
+    /// * [`Error::CampaignNotFound`]      — campaign does not exist.
+    /// * [`Error::CampaignNotSuccessful`] — campaign has not been successfully
+    ///   claimed (only claimed campaigns can be subject to tree death).
+    pub fn mark_trees_died(env: Env, campaign_id: u64) {
+        Self::assert_initialized(&env);
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Campaign(campaign_id))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::CampaignNotFound));
+
+        if campaign.status != CampaignStatus::Claimed {
+            panic_with_error!(&env, Error::CampaignNotSuccessful);
+        }
+
+        campaign.status = CampaignStatus::VerificationFailed;
+        Self::save_campaign(&env, campaign_id, &campaign);
+
+        env.events().publish(
+            ("CampaignStatusChanged", campaign_id),
+            CampaignStatusChangedEvent {
+                campaign_id,
+                new_status: CampaignStatus::VerificationFailed,
+            },
+        );
+    }
+
+    /// Claim an insurance refund for a sponsor after tree death.
+    ///
+    /// A sponsor calls this to recover their contribution from the insurance
+    /// pool. The campaign must have been marked as `VerificationFailed`.
+    ///
+    /// # Arguments
+    /// * `campaign_id` — ID of the campaign whose trees died.
+    /// * `contributor` — Address that originally contributed.
+    ///
+    /// # Errors
+    /// * [`Error::CampaignNotFound`]               — campaign does not exist.
+    /// * [`Error::CampaignNotVerificationFailed`]  — campaign not marked.
+    /// * [`Error::NoContributionFound`]            — no contribution recorded.
+    /// * [`Error::InvalidAmount`]                  — contribution amount invalid.
+    pub fn claim_insurance_refund(env: Env, campaign_id: u64, contributor: Address) {
+        contributor.require_auth();
+
+        let campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Campaign(campaign_id))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::CampaignNotFound));
+
+        if campaign.status != CampaignStatus::VerificationFailed {
+            panic_with_error!(&env, Error::CampaignNotVerificationFailed);
+        }
+
+        let contribution_key = DataKey::Contribution(campaign_id, contributor.clone());
+        let amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&contribution_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoContributionFound));
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        // Remove the contribution to prevent double-dipping.
+        env.storage().persistent().remove(&contribution_key);
+
+        // Deduct from the insurance pool.
+        let pool_key = DataKey::InsurancePool(campaign.token.clone());
+        let mut pool_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&pool_key)
+            .unwrap_or(0);
+        if pool_balance < amount {
+            panic_with_error!(&env, Error::ArithmeticOverflow);
+        }
+        pool_balance -= amount;
+        env.storage().instance().set(&pool_key, &pool_balance);
+
+        // Transfer from the contract to the contributor.
+        let token_client = token::Client::new(&env, &campaign.token);
+        token_client.transfer(&env.current_contract_address(), &contributor, &amount);
+
+        env.events().publish(
+            ("InsuranceRefund", campaign_id),
+            RefundIssuedEvent {
+                campaign_id,
+                contributor,
+                amount,
+            },
+        );
     }
 
     /// Contribute tokens to a campaign.
