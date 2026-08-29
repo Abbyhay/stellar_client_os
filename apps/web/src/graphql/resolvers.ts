@@ -216,5 +216,20 @@ export function createResolvers(defaultDataSource?: StreamDataSource) {
         );
       },
     },
+    Mutation: {
+      cloneCampaign: async (
+        _: unknown,
+        args: { id: string; network?: Network },
+        ctx: ResolverContext
+      ) => {
+        const streams = await resolveDataSource(ctx, defaultDataSource).getStreams(args.network ?? "testnet");
+        const campaign = streams.find((stream) => stream.id === args.id);
+        if (!campaign) throw new Error(`Campaign ${args.id} not found`);
+        return {
+          ...campaign,
+          id: `cloned-${campaign.id}`,
+        };
+      },
+    },
   };
 }
