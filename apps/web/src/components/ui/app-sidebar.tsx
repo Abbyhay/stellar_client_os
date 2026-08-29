@@ -50,6 +50,11 @@ const items = [
     icon: <BookIcon aria-hidden="true" />,
   },
   {
+    title: "Referrals",
+    url: "/social",
+    icon: <User2 aria-hidden="true" className="text-white size-5" />,
+  },
+  {
     title: "Airdrop",
     url: "/airdrop",
     icon: <EyeIcon aria-hidden="true" />,
