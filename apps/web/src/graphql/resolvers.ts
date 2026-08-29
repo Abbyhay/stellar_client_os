@@ -215,6 +215,27 @@ export function createResolvers(defaultDataSource?: StreamDataSource) {
           args.network ?? "testnet"
         );
       },
+
+      /**
+       * A sponsor's impact (estimated CO2 offset) vs the global average
+       * sponsor, including a percentile ranking (top 10%, etc.).
+       *
+       * @example
+       * query {
+       *   sponsorImpact(address: "GAAA") {
+       *     myVolumeUsd myCo2OffsetKg globalAverageCo2OffsetKg
+       *     globalSponsorCount percentile rankingBand
+       *   }
+       * }
+       */
+      sponsorImpact: async (
+        _: unknown,
+        args: { address: string; network?: Network },
+        ctx: ResolverContext
+      ) => {
+        const service = getAnalyticsService(ctx.dataSource ?? defaultDataSource);
+        return service.getSponsorImpact(args.address, args.network ?? "testnet");
+      },
     },
     Mutation: {
       cloneCampaign: async (
