@@ -111,6 +111,17 @@ const DEFAULT_REWARD: i128 = 20_000_000;
 // Contract
 // ---------------------------------------------------------------------------
 
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanterMetrics {
+    pub trees_completed: u32,
+    pub avg_completion_time: u64,
+    pub success_rate: u32,
+    pub current_bond_locked: i128,
+}
+
 #[contract]
 pub struct PlanterContract;
 
@@ -441,5 +452,16 @@ mod tests {
         let info = PlanterContract::get_planter(env.clone(), planter.clone());
         assert_eq!(info.jobs_completed, 1);
         assert_eq!(info.first_job_reward_claimed, false);
+    pub fn get_planter_metrics(env: Env, wallet: Address) -> PlanterMetrics {
+        env.storage().persistent().get(&wallet).unwrap_or(PlanterMetrics {
+            trees_completed: 0,
+            avg_completion_time: 0,
+            success_rate: 0,
+            current_bond_locked: 0,
+        })
+    }
+
+    pub fn set_planter_metrics(env: Env, wallet: Address, metrics: PlanterMetrics) {
+        env.storage().persistent().set(&wallet, &metrics);
     }
 }

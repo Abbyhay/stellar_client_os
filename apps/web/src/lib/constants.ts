@@ -5,6 +5,7 @@ export const DISTRIBUTOR_CONTRACT_ID = env.NEXT_PUBLIC_DISTRIBUTOR_CONTRACT_ID;
 export const PLANTER_CONTRACT_ID = env.NEXT_PUBLIC_PLANTER_CONTRACT_ID;
 export const SOROBAN_RPC_URL = env.NEXT_PUBLIC_SOROBAN_RPC_URL;
 export const NETWORK_PASSPHRASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE;
+export const STELLAR_NETWORK = env.NEXT_PUBLIC_STELLAR_NETWORK;
 
 // Distribution
 export const distributionType = ["equal", "weighted"] as const;

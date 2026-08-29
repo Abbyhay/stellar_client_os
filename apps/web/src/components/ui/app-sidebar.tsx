@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 
-import { User2 } from "lucide-react";
+import { Trophy, User2 } from "lucide-react";
 import { Sidebar, useSidebar } from "@/components/ui/sidebar";
 
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -33,6 +33,11 @@ const items = [
     title: "History",
     url: "/history",
     icon: <User2 aria-hidden="true" className="text-white size-5" />,
+  },
+  {
+    title: "Leaderboard",
+    url: "/leaderboard",
+    icon: <Trophy aria-hidden="true" className="text-white size-5" />,
   },
   {
     title: "Payment Stream",
