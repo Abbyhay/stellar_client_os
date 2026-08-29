@@ -8,20 +8,24 @@ import AppProvider from "@/providers/app-provider";
 import { ToastProvider } from "@/providers/ToastProvider";
 import ReactQueryProvider from "@/providers/ReactQueryProvider";
 import { RootErrorBoundary } from "@/components/ui/root-error-boundary";
+import { SocialProvider } from "@/providers/SocialProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
+  display: "swap",
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 const bricolageGrotesque = Bricolage_Grotesque({
   subsets: ["latin"],
   variable: "--font-bricolage-grotesque",
+  display: "swap",
 });
 
 
@@ -42,13 +46,15 @@ export default function RootLayout({
       >
         <ReactQueryProvider>
           <StellarWalletProvider>
-            <RootErrorBoundary>
-              <Navbar />
-              <AppProvider>
-                {children}
-              </AppProvider>
-              <WalletModal />
-            </RootErrorBoundary>
+            <SocialProvider>
+              <RootErrorBoundary>
+                <Navbar />
+                <AppProvider>
+                  {children}
+                </AppProvider>
+                <WalletModal />
+              </RootErrorBoundary>
+            </SocialProvider>
           </StellarWalletProvider>
         </ReactQueryProvider>
         <ToastProvider />

@@ -1,11 +1,26 @@
 "use client";
-import { Toaster } from "react-hot-toast";
+import { useEffect } from "react";
+import { Toaster, useToasterStore, toast } from "react-hot-toast";
+
+const TOAST_LIMIT = 3;
 
 export const ToastProvider = () => {
+  const { toasts } = useToasterStore();
+
+  useEffect(() => {
+    toasts
+      .filter((t) => t.visible)
+      .filter((_, i) => i >= TOAST_LIMIT)
+      .forEach((t) => toast.dismiss(t.id));
+  }, [toasts]);
+
   return (
     <Toaster
       position="top-right"
+      gutter={12}
       toastOptions={{
+        // Default duration for toasts (milliseconds)
+        duration: 5000,
         className: "",
         style: {
           background: "#1a1b1e",
