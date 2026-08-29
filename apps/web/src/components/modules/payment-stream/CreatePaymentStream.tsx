@@ -11,12 +11,13 @@ import { PaymentStreamConfirmationModal } from "./PaymentStreamConfirmationModal
 import { capitalizeWord } from "@/lib/utils";
 import { SUPPORTED_TOKENS, PaymentStreamFormData } from "@/lib/validations";
 import { StellarService } from "@/lib/stellar";
-import { validateEndTime } from "@/lib/stream-validation";
+import { createStream } from "@/lib/api";
+import { validateEndTime, validateContractId } from "@/lib/stream-validation";
 import { useDebouncedCallback } from "@/hooks/use-debounce-callback";
 import { useBalanceValidation } from "@/hooks/use-balance-validation";
 import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
 import { createTestnetService } from "@/services/stellar.service";
-import { PAYMENT_STREAM_CONTRACT_ID, DISTRIBUTOR_CONTRACT_ID } from "@/lib/constants";
+import { PAYMENT_STREAM_CONTRACT_ID, DISTRIBUTOR_CONTRACT_ID } from "@/lib/env";
 
 // Stream form state type
 interface StreamFormData {
@@ -45,7 +46,7 @@ const createInitialStreamData = (
 });
 
 const CreatePaymentStream = () => {
-  const { address, isConnected } = useWallet();
+  const { address, isConnected, signTransaction } = useWallet();
   const queryClient = useQueryClient();
 
   const tokenOptions = SUPPORTED_TOKENS.map((token) => ({
@@ -79,11 +80,7 @@ const CreatePaymentStream = () => {
     distributor: DISTRIBUTOR_CONTRACT_ID
   }), []);
 
-  const selectedToken = useMemo(() => {
-    return SUPPORTED_TOKENS.find((t) => t.value === streamData.token);
-  }, [streamData.token]);
-
-  const { balanceError, insufficientBalance } = useBalanceValidation(
+  const { error: balanceError, insufficientBalance } = useBalanceValidation(
     streamData.amount,
     streamData.token
   );
@@ -101,7 +98,7 @@ const CreatePaymentStream = () => {
           data.duration === 'week' ? 604800 :
             data.duration === 'month' ? 2592000 : 31536000;
       const durationInSeconds = Math.floor(parseFloat(data.durationValue) * durationMultiplier);
-      const startTime = BigInt(Math.floor(Date.now() / 1000));
+      const startTime = BigInt(Math.floor(Date.now() / 1000) + 60); // 60s buffer for on-chain latency
 
       const fee = await realStellarService.getStreamCreationFeeEstimate({
         recipient: data.recipient,
@@ -123,15 +120,7 @@ const CreatePaymentStream = () => {
     if (isConnected && address) {
       estimateFee(streamData, address);
     }
-  }, [
-    streamData.recipient,
-    streamData.amount,
-    streamData.token,
-    streamData.duration,
-    streamData.durationValue,
-    isConnected,
-    address
-  ]);
+  }, [estimateFee, streamData, isConnected, address]);
 
   const isFormDirty = useMemo(() => {
     return JSON.stringify(streamData) !== JSON.stringify(initialStreamData);
@@ -156,6 +145,14 @@ const CreatePaymentStream = () => {
     }
     if (!StellarService.validateStellarAddress(streamData.recipient)) {
       toast.error("Invalid Stellar address");
+      return;
+    }
+
+    // Validate token contract ID (must be 'native' for XLM or a valid StrKey contract address)
+    const selectedTokenMeta = SUPPORTED_TOKENS.find((t) => t.value === streamData.token);
+    const tokenAddress = selectedTokenMeta?.address;
+    if (!tokenAddress || (tokenAddress !== "native" && !validateContractId(tokenAddress))) {
+      toast.error("Invalid token: contract address is not a valid Stellar contract ID");
       return;
     }
     if (!streamData.amount || parseFloat(streamData.amount) <= 0) {
@@ -196,14 +193,42 @@ const CreatePaymentStream = () => {
         transferable: streamData.transferability,
       };
 
-      const streamId = await StellarService.createPaymentStream(formData);
+      const tokenAddress = SUPPORTED_TOKENS.find(t => t.value === streamData.token)?.address;
+      if (!tokenAddress) {
+        throw new Error('Invalid token selected');
+      }
+
+      const amount = BigInt(Math.floor(parseFloat(streamData.amount) * 10000000));
+      const durationMultiplier = streamData.duration === 'hour' ? 3600 :
+        streamData.duration === 'day' ? 86400 :
+          streamData.duration === 'week' ? 604800 :
+            streamData.duration === 'month' ? 2592000 : 31536000;
+      const durationInSeconds = Math.floor(parseFloat(streamData.durationValue) * durationMultiplier);
+      const startTime = Math.floor(Date.now() / 1000);
+
+      if (!isConnected || !address || !signTransaction) {
+        throw new Error('Connect your wallet');
+      }
+
+      const streamId = await createStream({
+        sender: address,
+        recipient: streamData.recipient,
+        token: tokenAddress,
+        amount,
+        startTime,
+        endTime: startTime + durationInSeconds,
+        signTransaction,
+      });
 
       toast.success(
-        `Stream created successfully! ID: ${streamId.slice(0, 10)}...`
+        `Stream created successfully! ID: ${streamId}`
       );
 
       // Reset form
-      setStreamData(initialStreamData);
+      setStreamData({
+        ...initialStreamData,
+        token: tokenOptions[0]?.value || "XLM",
+      });
       setFormKey((k) => k + 1);
 
       // Invalidate streams queries
