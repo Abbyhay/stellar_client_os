@@ -20,7 +20,7 @@ import { isValidStellarAddress } from "@/utils/stellar-validation";
 
 import { offrampService } from "@/services/offramp.service";
 import { notify } from "@/utils/notification";
-import { isLockedWalletError } from "@/utils/wallet-errors";
+import { isLockedWalletError, isWalletCancellationError } from "@/utils/wallet-errors";
 
 export type WalletId = string;
 export type ConnectionStatus =
@@ -101,14 +101,7 @@ export const StellarWalletProvider = ({
   // All three pieces of state are derived from the same storage snapshot so
   // they are always consistent with one another.
   const [address, setAddress] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null;
-    const savedAddress = safeGetItem("stellar_wallet_address")?.toUpperCase();
-    const savedNetwork = safeGetItem("stellar_wallet_network");
-    console.log('Lazy init address:', { savedAddress, savedNetwork });
-    if (savedNetwork === WalletNetwork.TESTNET && savedAddress && isValidStellarAddress(savedAddress)) {
-      return savedAddress;
-    }
-    return null;
+    return loadPersistedSession().address;
   });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(() => {
     const { address: savedAddress, walletId: savedWalletId, network: savedNetwork } = loadPersistedSession();
@@ -327,6 +320,12 @@ export const StellarWalletProvider = ({
       else if (error && typeof error === "object" && "message" in error)
         errorMessage = String((error as { message: unknown }).message);
 
+      // Gracefully handle user cancellation / closing modal silently without console error or toast
+      if (isWalletCancellationError(error) || isWalletCancellationError({ message: errorMessage })) {
+        setConnectionStatus("idle");
+        return;
+      }
+
       if (isLockedWalletError(error) || isLockedWalletError({ message: errorMessage })) {
         notify.error(
           "Your wallet extension is locked. Unlock it and try connecting again.",
@@ -357,11 +356,6 @@ export const StellarWalletProvider = ({
             )}
           </div>,
         );
-      } else if (
-        errorMessage.toLowerCase().includes("user rejected") ||
-        errorMessage.toLowerCase().includes("permission denied")
-      ) {
-        notify.error("Connection rejected by user");
       } else {
         // Show a generic but helpful error for other errors
         notify.error(`Failed to connect to ${walletId}: ${errorMessage}`);
