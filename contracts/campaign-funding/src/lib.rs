@@ -1,6 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
+    Address, Env,
 };
 
 // ---------------------------------------------------------------------------
@@ -122,6 +123,21 @@ pub struct FundsClaimedEvent {
 pub struct RefundIssuedEvent {
     pub campaign_id: u64,
     pub contributor: Address,
+    pub amount: i128,
+}
+
+/// Emitted when the protocol fee is collected during
+/// [`CampaignFundingContract::claim_funds`].
+///
+/// Together with [`ContributionMadeEvent`], [`FundsClaimedEvent`], and
+/// [`RefundIssuedEvent`], this makes every funds flow of a campaign — deposit,
+/// fee, payout, and refund — observable on-chain.
+#[contractevent(topics = ["ProtocolFeeCollected"])]
+#[derive(Clone)]
+pub struct ProtocolFeeCollectedEvent {
+    pub campaign_id: u64,
+    pub token: Address,
+    pub fee_collector: Address,
     pub amount: i128,
 }
 
@@ -453,6 +469,10 @@ impl CampaignFundingContract {
     /// is sent to the creator.  The campaign status is updated to `Claimed`
     /// to prevent double-claims.
     ///
+    /// When the fee is non-zero a [`ProtocolFeeCollectedEvent`] is emitted so
+    /// the fee flow is recorded on-chain alongside the contribution, payout,
+    /// and refund events.
+    ///
     /// # Errors
     /// * [`Error::CampaignNotSuccessful`] — campaign is not `Successful`.
     /// * [`Error::AlreadyClaimed`]        — funds were already claimed.
@@ -485,6 +505,14 @@ impl CampaignFundingContract {
                 .get(&DataKey::FeeCollector)
                 .unwrap();
             token_client.transfer(&env.current_contract_address(), &fee_collector, &fee);
+
+            ProtocolFeeCollectedEvent {
+                campaign_id,
+                token: campaign.token.clone(),
+                fee_collector: fee_collector.clone(),
+                amount: fee,
+            }
+            .publish(&env);
         }
 
         token_client.transfer(&env.current_contract_address(), &campaign.creator, &net);
@@ -699,9 +727,9 @@ impl CampaignFundingContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger, LedgerInfo},
+        testutils::{Address as _, Events, Ledger, LedgerInfo},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env,
+        Address, Env, Event,
     };
 
     // -----------------------------------------------------------------------
@@ -882,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidDeadline")]
+    #[should_panic(expected = "Error(Contract, #5)")]
     fn test_create_campaign_deadline_in_past() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1008,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotActive")]
+    #[should_panic(expected = "Error(Contract, #8)")]
     fn test_contribute_after_deadline() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1029,7 +1057,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidAmount")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_contribute_zero_amount() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1046,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "TargetExceeded")]
+    #[should_panic(expected = "Error(Contract, #16)")]
     fn test_contribute_exceeds_hard_cap() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1168,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "DeadlineNotReached")]
+    #[should_panic(expected = "Error(Contract, #9)")]
     fn test_trigger_expiry_before_deadline() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1183,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotActive")]
+    #[should_panic(expected = "Error(Contract, #8)")]
     fn test_trigger_expiry_already_resolved() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1279,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotSuccessful")]
+    #[should_panic(expected = "Error(Contract, #11)")]
     fn test_claim_funds_on_active_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1293,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotSuccessful")]
+    #[should_panic(expected = "Error(Contract, #11)")]
     fn test_claim_funds_on_failed_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1309,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "AlreadyClaimed")]
+    #[should_panic(expected = "Error(Contract, #13)")]
     fn test_claim_funds_double_claim() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1397,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotFailed")]
+    #[should_panic(expected = "Error(Contract, #10)")]
     fn test_refund_on_active_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1417,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotFailed")]
+    #[should_panic(expected = "Error(Contract, #10)")]
     fn test_refund_on_successful_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1438,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "NoContributionFound")]
+    #[should_panic(expected = "Error(Contract, #12)")]
     fn test_refund_no_contribution() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1456,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "NoContributionFound")]
+    #[should_panic(expected = "Error(Contract, #12)")]
     fn test_refund_double_refund_prevented() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1492,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "FeeTooHigh")]
+    #[should_panic(expected = "Error(Contract, #14)")]
     fn test_set_fee_rate_too_high() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1542,5 +1570,81 @@ mod tests {
         // fee = 9_999 * 100 / 10_000 = 99 (integer division); net = 9_900.
         assert_eq!(token_client.balance(&creator), 9_900);
         assert_eq!(token_client.balance(&fee_collector), 99);
+    }
+
+    // -----------------------------------------------------------------------
+    // Funds-flow transparency events
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_claim_funds_emits_protocol_fee_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (contract_id, client, _, fee_collector) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &10_000);
+
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contributor, &id, &8_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id);
+        client.claim_funds(&id);
+
+        // 2.5 % fee on 8_000 = 200; net to creator = 7_800.
+        let expected_fee = ProtocolFeeCollectedEvent {
+            campaign_id: id,
+            token: token_addr.clone(),
+            fee_collector: fee_collector.clone(),
+            amount: 200,
+        }
+        .to_xdr(&env, &contract_id);
+        let events = env.events().all();
+        assert!(
+            events.events().iter().any(|e| *e == expected_fee),
+            "expected ProtocolFeeCollectedEvent to be emitted"
+        );
+    }
+
+    #[test]
+    fn test_claim_funds_zero_fee_emits_no_fee_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let contract_id = env.register(CampaignFundingContract, ());
+        let client = CampaignFundingContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+        client.initialize(&admin, &fee_collector, &0); // 0 % fee
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &10_000);
+
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contributor, &id, &6_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id);
+        client.claim_funds(&id);
+
+        // With a 0 % fee no protocol fee flows, so no fee event may be emitted.
+        let unexpected = ProtocolFeeCollectedEvent {
+            campaign_id: id,
+            token: token_addr.clone(),
+            fee_collector: fee_collector.clone(),
+            amount: 0,
+        }
+        .to_xdr(&env, &contract_id);
+        let events = env.events().all();
+        assert!(
+            !events.events().iter().any(|e| *e == unexpected),
+            "no ProtocolFeeCollectedEvent should be emitted when the fee is zero"
+        );
     }
 }
