@@ -368,6 +368,16 @@ impl CampaignFundingContract {
             .instance()
             .get(&DataKey::CampaignCount)
             .unwrap_or(0);
+        if count == u64::MAX {
+            // Campaign ID space exhausted: reject gracefully instead of overflowing.
+            env.events().publish(
+                ("ContractFull",),
+                ContractFullEvent {
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+            panic_with_error!(&env, Error::ContractFull);
+        }
         count += 1;
         env.storage()
             .instance()
@@ -1115,6 +1125,27 @@ mod tests {
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(client.get_campaign_count(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_create_campaign_rejected_when_counter_full() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (contract_id, client, _, _) = setup_contract(&env);
+        let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Exhaust the campaign ID space: the next create must be rejected with
+        // Error::ContractFull instead of panicking on arithmetic overflow.
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignCount, &u64::MAX);
+        });
+
+        client.create_campaign(&creator, &token, &10_000, &5_000, &2_000);
     }
 
     #[test]
